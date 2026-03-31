@@ -12,5 +12,5 @@ python inference.py \
   --batch_size $BATCH_SIZE \
   --dataset $DATASET \
   --stage2_checkpoint_path $CHECKPOINT \
-  --constrant $CONSTRAINT \
+  --constraint $CONSTRAINT \
   --device $DEVICE \

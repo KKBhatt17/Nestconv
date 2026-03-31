@@ -111,7 +111,7 @@ def process_image(image_path, image_size, patch_size, num_scales, no_resize=Fals
     img_tensor = TF.to_tensor(img) * 255.0
     entropy_maps = compute_patch_entropy_vectorized(img_tensor, patch_size, num_scales)
 
-    return entropy_maps
+    return entropy_maps[14]
 
 # should be called as
 # process_image(image_path, 366, 14, 3)

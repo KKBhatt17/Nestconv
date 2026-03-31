@@ -39,12 +39,14 @@ def get_args_parser():
     # Stage2 router only training steps
     parser.add_argument('--warmup_steps', default=50, type=int)
     parser.add_argument('--total_steps', default=1000, type=int)
+    parser.add_argument('--grad_accum_steps', default=4, type=int)
 
     parser.add_argument('--gen_id', default=300, type=int)
 
     parser.add_argument('--constraint', default=1.0, type=int)
-    parser.add_argument('--entropy_patch_size', default=16, type=int,
-                        help='patch size whose entropy map is flattened and used as router input')
+    parser.add_argument('--entropy_patch_size', default=14, type=int)
+    parser.add_argument('--entropy_lookup_path', default='', type=str, help='path to entropy lookup csv')
+    parser.add_argument('--lookup_batches', default=32, type=int, help='number of sorted batches used to build entropy lookup')
 
     # Optimizer parameters
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
@@ -52,6 +54,8 @@ def get_args_parser():
     parser.add_argument('--weight_decay', type=float, default=0.05,
                         help='weight decay (default: 0.05)')
 
+    parser.add_argument('--lr', type=float, default=1e-5, metavar='LR',
+                        help='learning rate (absolute lr)')
     parser.add_argument('--max_lr', type=float, default=1e-5, metavar='LR',
                         help='learning rate (absolute lr)')
     parser.add_argument('--min_lr', type=float, default=1e-7, metavar='LR',

@@ -43,21 +43,6 @@ def _gumbel_sigmoid(
     return ret
 
 
-def _expand_channel_mask(mask):
-    if torch.is_tensor(mask) and mask.dim() == 2:
-        return mask.unsqueeze(1)
-    return mask
-
-
-def _expand_residual_mask(mask):
-    if torch.is_tensor(mask):
-        if mask.dim() == 0:
-            return mask
-        if mask.dim() == 1:
-            return mask.view(-1, 1, 1)
-    return mask
-
-
 class ModifiedLN(nn.Module):
     def __init__(
             self,
@@ -68,8 +53,7 @@ class ModifiedLN(nn.Module):
         self.bias = nn.Parameter(torch.zeros(embed_dim, ))
 
     def forward(self, x):
-        use_dense_path = self.training or not hasattr(self, 'dim_bool') or (torch.is_tensor(self.dim_bool) and self.dim_bool.dim() != 1)
-        if use_dense_path:
+        if self.training:
             b, n, d = x.shape
             output = F.layer_norm(x, (d,), self.weight, self.bias)
         else:
@@ -90,10 +74,10 @@ class ModifiedAttention(nn.Module):
             self,
             dim: int,
             num_heads: int = 8,
-            router_input_dim: int = 1,
             qkv_bias: bool = False,
             attn_drop: float = 0.,
             proj_drop: float = 0.,
+            router_input_dim: int = 256,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
@@ -111,17 +95,17 @@ class ModifiedAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        self.router = nn.Sequential(nn.Linear(router_input_dim, 7),
+        self.router = nn.Sequential(nn.Linear(router_input_dim, 64),
                                     nn.ReLU(),
-                                    nn.Linear(7, 7),
+                                    nn.Linear(64, 7),
                                     )
         self.setted_mask = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         sub_input = x
         B, N, C = sub_input.shape
-        if self.training or self.mask.dim() == 2:
-            mask = self.mask.repeat_interleave(self.head_dim, dim=-1)
+        if self.training:
+            mask = self.mask.repeat_interleave(self.head_dim)
             qkv_out = self.qkv(sub_input)
             qkv = qkv_out.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
             q, k, v = qkv.unbind(0)
@@ -137,7 +121,7 @@ class ModifiedAttention(nn.Module):
                 attn = self.attn_drop(attn)
                 qkv_output = attn @ v
             proj_input = qkv_output.transpose(1, 2).reshape(B, N, self.num_heads * self.head_dim)
-            proj_input = proj_input * _expand_channel_mask(mask)
+            proj_input = proj_input * mask
             proj_output = self.proj(proj_input)
             output = self.proj_drop(proj_output)
         else:
@@ -173,13 +157,10 @@ class ModifiedAttention(nn.Module):
         return output
 
     def caculate_mask(self):
-        logist = self.router(self.router_input)
+        logist = self.router(self.router_input).squeeze(0)
         if self.training:
             mask = _gumbel_sigmoid(logist, tau=self.tau, hard=self.hard, training=True)
-            if mask.dim() == 2:
-                mask_one = torch.ones(mask.shape[0], 5, device=mask.device)
-            else:
-                mask_one = torch.ones(5).to(mask.device)
+            mask_one = torch.ones(5).to(mask.device)
             mask = torch.cat((mask_one, mask), dim=-1)
             self.mask = mask
         else:
@@ -187,10 +168,7 @@ class ModifiedAttention(nn.Module):
                 mask = self.setted_mask
             else:
                 mask = _gumbel_sigmoid(logist, tau=self.tau, hard=True, training=False)
-                if mask.dim() == 2:
-                    mask_one = torch.ones(mask.shape[0], 5, device=mask.device)
-                else:
-                    mask_one = torch.ones(5).to(mask.device)
+                mask_one = torch.ones(5).to(mask.device)
                 mask = torch.cat((mask_one, mask), dim=-1)
             self.mask = mask
 
@@ -214,8 +192,8 @@ class ModifiedVitMlp(nn.Module):
             self,
             embed_dim=192,
             mlp_ratio=4,
-            router_input_dim=1,
             act_layer=nn.GELU,
+            router_input_dim=256,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -227,17 +205,17 @@ class ModifiedVitMlp(nn.Module):
         self.act = act_layer()
         self.fc2 = nn.Linear(self.hidden_features, out_features)
 
-        self.router = nn.Sequential(nn.Linear(router_input_dim, 8),
+        self.router = nn.Sequential(nn.Linear(router_input_dim, 64),
                                     nn.ReLU(),
-                                    nn.Linear(8, 8),
+                                    nn.Linear(64, 8),
                                     )
         self.setted_mask = None
 
     def forward(self, x):
-        if self.training or self.mask.dim() == 2:
+        if self.training:
             mask = self.mask
-            mask = mask.repeat_interleave(self.embed_dim//2, dim=-1)
-            x_middle = self.act(self.fc1(x)) * _expand_channel_mask(mask)
+            mask = mask.repeat_interleave(self.embed_dim//2)
+            x_middle = self.act(self.fc1(x)) * mask
             output = self.fc2(x_middle)
         else:
             mask = self.mask
@@ -255,7 +233,7 @@ class ModifiedVitMlp(nn.Module):
         return output
 
     def caculate_mask(self):
-        logist = self.router(self.router_input)
+        logist = self.router(self.router_input).squeeze(0)
         if self.training:
             mask = _gumbel_sigmoid(logist, tau=self.tau, hard=self.hard, training=True)
             self.mask = mask
@@ -292,8 +270,7 @@ class ModifiedHead(nn.Module):
         self.bias = nn.Parameter(torch.zeros(num_classes, ))
 
     def forward(self, x):
-        use_dense_path = self.training or not hasattr(self, 'dim_bool') or (torch.is_tensor(self.dim_bool) and self.dim_bool.dim() != 1)
-        if use_dense_path:
+        if self.training:
             output = F.linear(x, self.weight, bias=self.bias)
         else:
             sub_input = x
@@ -310,12 +287,9 @@ class ModifiedBlock(Block):
         super(ModifiedBlock, self).__init__(**kwargs)
 
     def forward(self, x, mask_depth_attn, mask_depth_mlp, embed_mask):
-        embed_mask = _expand_channel_mask(embed_mask)
-        if self.training or (torch.is_tensor(mask_depth_attn) and mask_depth_attn.dim() == 1):
-            attn_scale = _expand_residual_mask(mask_depth_attn)
-            mlp_scale = _expand_residual_mask(mask_depth_mlp)
-            x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x) * embed_mask))) * attn_scale
-            x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x) * embed_mask))) * mlp_scale
+        if self.training:
+            x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x) * embed_mask))) * mask_depth_attn
+            x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x) * embed_mask))) * mask_depth_mlp
         else:
             if mask_depth_attn == 1:
                 x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
@@ -324,7 +298,7 @@ class ModifiedBlock(Block):
         return x
 
 class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
-    def __init__(self, embed_dim, mlp_ratio, depth, num_heads, qkv_bias, num_classes, block, router_input_dim=1, **kwargs):
+    def __init__(self, embed_dim, mlp_ratio, depth, num_heads, qkv_bias, num_classes, block, router_input_dim=256, **kwargs):
         super(EAViTStage2, self).__init__(embed_dim=embed_dim, mlp_ratio=mlp_ratio, depth=depth, num_heads=num_heads, block_fn=block, **kwargs)
         self.depth = depth
         self.embed_dim = embed_dim
@@ -351,23 +325,23 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
             self.blocks[layer_idx].attn = ModifiedAttention(
                 dim=embed_dim,
                 num_heads=num_heads,
+                qkv_bias=qkv_bias,
                 router_input_dim=router_input_dim,
-                qkv_bias=qkv_bias
             )
         self.head_dim = embed_dim//num_heads
 
-        self.embed_router = nn.Sequential(nn.Linear(router_input_dim, 7),
+        self.embed_router = nn.Sequential(nn.Linear(router_input_dim, 128),
                                     nn.ReLU(),
-                                    nn.Linear(7, 7),
+                                    nn.Linear(128, 7),
                                     )
 
-        self.depth_attn_router = nn.Sequential(nn.Linear(router_input_dim, depth),
+        self.depth_attn_router = nn.Sequential(nn.Linear(router_input_dim, 128),
                                     nn.ReLU(),
-                                    nn.Linear(depth, depth))
+                                    nn.Linear(128, depth))
 
-        self.depth_mlp_router = nn.Sequential(nn.Linear(router_input_dim, depth),
+        self.depth_mlp_router = nn.Sequential(nn.Linear(router_input_dim, 128),
                                     nn.ReLU(),
-                                    nn.Linear(depth, depth))
+                                    nn.Linear(128, depth))
 
         self.setted_embed_mask = None
         self.setted_depth_attn_mask = None
@@ -380,28 +354,27 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
         x = self.patch_drop(x)
         x = self.norm_pre(x)
 
-        if self.training or self.embed_mask.dim() == 2:
+        if self.training:
             embed_mask = self.embed_mask
-            embed_mask = embed_mask.repeat_interleave(self.head_dim, dim=-1)
+            embed_mask = embed_mask.repeat_interleave(self.head_dim)
+            depth_attn_mask = self.depth_attn_mask
+            depth_mlp_mask = self.depth_mlp_mask
             for index in range(self.depth):
-                if self.depth_attn_mask.dim() == 2:
-                    depth_attn_mask = self.depth_attn_mask[:, index]
-                    depth_mlp_mask = self.depth_mlp_mask[:, index]
-                else:
-                    depth_attn_mask = self.depth_attn_mask[index]
-                    depth_mlp_mask = self.depth_mlp_mask[index]
-                x = self.blocks[index](x, depth_attn_mask, depth_mlp_mask, embed_mask)
-            x = self.norm(x) * _expand_channel_mask(embed_mask)
+                x = self.blocks[index](x, depth_attn_mask[index], depth_mlp_mask[index], embed_mask)
+            x = self.norm(x) * embed_mask
         else:
             embed_mask = self.embed_mask
-            embed_mask = embed_mask.repeat_interleave(self.head_dim, dim=-1)
+            embed_mask = embed_mask.repeat_interleave(self.head_dim)
             embed_mask = embed_mask.bool()
             self.configure_dim_bool(embed_mask)
+
+            depth_attn_mask = self.depth_attn_mask
+            depth_mlp_mask = self.depth_mlp_mask
 
             x = x[:, :, embed_mask]
 
             for index in range(self.depth):
-                x = self.blocks[index](x, self.depth_attn_mask[index], self.depth_mlp_mask[index], embed_mask)
+                x = self.blocks[index](x, depth_attn_mask[index], depth_mlp_mask[index], embed_mask)
 
             x = self.norm(x)
         return x
@@ -423,14 +396,7 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
         return x, mean_attn_mask_value, mean_mlp_mask_value, mean_embed_dim_mask, mean_depth_attn_mask, mean_depth_mlp_mask, total_macs
 
     def caculate_cost(self):
-        if self.embed_mask.dim() == 2:
-            d_embed = torch.sum(self.embed_mask, dim=-1) * self.head_dim
-            total_attn_macs = torch.zeros_like(d_embed)
-            total_mlp_macs = torch.zeros_like(d_embed)
-        else:
-            d_embed = torch.sum(self.embed_mask) * self.head_dim
-            total_attn_macs = 0
-            total_mlp_macs = 0
+        d_embed = torch.sum(self.embed_mask) * self.head_dim
 
         d_head = self.head_dim
 
@@ -438,21 +404,18 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
 
         max = 1.74e10
 
+        total_attn_macs = 0
+        total_mlp_macs = 0
+
         for i in range(self.depth):
-            if self.embed_mask.dim() == 2:
-                num_head = torch.sum(self.blocks[i].attn.mask, dim=-1)
-                attn_macs = (4 * N * d_embed * d_head * num_head + 2 * N * N * d_head * num_head) * self.depth_attn_mask[:, i]
+            num_head = torch.sum(self.blocks[i].attn.mask)
+            attn_macs = (4 * N * d_embed * d_head * num_head + 2 * N * N * d_head * num_head) * self.depth_attn_mask[i]
 
-                ratio = torch.sum(self.blocks[i].mlp.mask, dim=-1) / 2
-                hidden_dim = ratio * self.embed_dim
-                mlp_macs = 2 * N * d_embed * hidden_dim * self.depth_mlp_mask[:, i]
-            else:
-                num_head = torch.sum(self.blocks[i].attn.mask)
-                attn_macs = (4 * N * d_embed * d_head * num_head + 2 * N * N * d_head * num_head) * self.depth_attn_mask[i]
+            ratio = torch.sum(self.blocks[i].mlp.mask) / 2
 
-                ratio = torch.sum(self.blocks[i].mlp.mask) / 2
-                hidden_dim = ratio * self.embed_dim
-                mlp_macs = 2 * N * d_embed * hidden_dim * self.depth_mlp_mask[i]
+            hidden_dim = ratio * self.embed_dim
+
+            mlp_macs = 2 * N * d_embed * hidden_dim * self.depth_mlp_mask[i]
 
             total_attn_macs += attn_macs
             total_mlp_macs += mlp_macs
@@ -474,12 +437,9 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
             attn_mean_list.append(mask_attn)
             mlp_mean_list.append(mask_mlp)
 
-        if self.embed_mask.dim() == 2:
-            mean_attn_mask = torch.stack(attn_mean_list, dim=1)
-            mean_mlp_mask = torch.stack(mlp_mean_list, dim=1)
-        else:
-            mean_attn_mask = torch.stack(attn_mean_list)
-            mean_mlp_mask = torch.stack(mlp_mean_list)
+        mean_attn_mask = torch.stack(attn_mean_list)
+
+        mean_mlp_mask = torch.stack(mlp_mean_list)
 
         mean_embed_dim_mask = self.embed_mask
 
@@ -489,18 +449,12 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
         return mean_attn_mask, mean_mlp_mask, mean_embed_dim_mask, mean_depth_attn_mask, mean_depth_mlp_mask, total_macs
 
     def caculate_mask_all(self):
-        if self.router_input is None:
-            raise ValueError("Router input is not configured. Call configure_router_input before forward.")
-
-        embed_logist = self.embed_router(self.router_input)
-        depth_attn_logist = self.depth_attn_router(self.router_input)
-        depth_mlp_logist = self.depth_mlp_router(self.router_input)
+        embed_logist = self.embed_router(self.router_input).squeeze(0)
+        depth_attn_logist = self.depth_attn_router(self.router_input).squeeze(0)
+        depth_mlp_logist = self.depth_mlp_router(self.router_input).squeeze(0)
         if self.training:
             embed_mask = _gumbel_sigmoid(embed_logist, tau=self.tau, hard=self.hard, training=True)
-            if embed_mask.dim() == 2:
-                mask_one = torch.ones(embed_mask.shape[0], 5, device=embed_mask.device)
-            else:
-                mask_one = torch.ones(5).to(embed_mask.device)
+            mask_one = torch.ones(5).to(embed_mask.device)
             embed_mask = torch.cat((mask_one, embed_mask), dim=-1)
             self.embed_mask = embed_mask
 
@@ -513,10 +467,7 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
                 embed_mask = self.setted_embed_mask
             else:
                 embed_mask = _gumbel_sigmoid(embed_logist, tau=self.tau, hard=True, training=False)
-                if embed_mask.dim() == 2:
-                    mask_one = torch.ones(embed_mask.shape[0], 5, device=embed_mask.device)
-                else:
-                    mask_one = torch.ones(5).to(embed_mask.device)
+                mask_one = torch.ones(5).to(embed_mask.device)
                 embed_mask = torch.cat((mask_one, embed_mask), dim=-1)
 
             if torch.sum(embed_mask) == 0:
@@ -573,16 +524,16 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
 if __name__ == '__main__':
     model = EAViTStage2(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), num_classes=100, block=ModifiedBlock, router_input_dim=196)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), num_classes=100, block=ModifiedBlock)
 
     device = "cuda:0"
-    router_input = torch.rand(196).to(device)
+    constraint = torch.rand(1).to(device)
 
-    print(router_input)
+    print(constraint)
 
     model.eval()
     model = model.to(device)
-    model.configure_router_input(router_input=router_input, tau=1)
+    model.configure_constraint(constraint=constraint, tau=1)
 
     src = torch.rand((1, 3, 224, 224))
     src = src.to(device)

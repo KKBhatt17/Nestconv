@@ -74,7 +74,7 @@ def train(args):
             total_loss = 0
 
             if epoch in args.curriculum_epochs:
-                stage_index = args.stage_epochs.index(epoch)
+                stage_index = args.curriculum_epochs.index(epoch)
                 wandb.log({"Epoch": epoch + 1, "stage": stage_index})
                 current_stage += 1
 
@@ -120,7 +120,6 @@ def train(args):
 
                 pbar.set_postfix(**{"loss": loss.item(), "lr": optimizer.param_groups[0]['lr']})
                 pbar.update(1)
-                break
 
 
             epoch_loss = total_loss / len(trainDataLoader)

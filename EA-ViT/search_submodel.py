@@ -94,7 +94,7 @@ def create_individual_random():
 def evaluate(vector):
     latency = torch.rand(1).to(device)
 
-    model.configure_latency(latency=latency, tau=1)
+    model.configure_constraint(constraint=latency, tau=1)
     vector[0] = 1
 
     embed_sum = int(sum(vector[:12]))

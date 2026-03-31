@@ -174,8 +174,6 @@ def train(args):
 
             global_step += 1
 
-            break
-
 
 
 
@@ -268,8 +266,6 @@ def train(args):
 
                 pbar.set_postfix(**{"loss": loss.item(), "lr": optimizer.param_groups[0]['lr']})
                 pbar.update(1)
-
-                break
 
             epoch_loss = total_loss / len(trainDataLoader)
             epoch_ce_loss = total_ce_loss / len(trainDataLoader)

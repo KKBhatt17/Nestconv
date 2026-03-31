@@ -1,14 +1,6 @@
-import numpy as np
 import torch
-import torch.nn.functional as F
-from typing import List, Tuple, Optional, Union
 from torchvision.transforms import functional as TF
-import math
-import cv2
 from PIL import Image
-
-import math
-import os
 
 def compute_patch_entropy_vectorized(image, patch_size=16, num_scales=2, bins=512, pad_value=1e6):
     """
@@ -73,6 +65,38 @@ def compute_patch_entropy_vectorized(image, patch_size=16, num_scales=2, bins=51
     return entropy_maps
 
 
+def process_pil_image(image, image_size, patch_size, num_scales, no_resize=False):
+    if no_resize:
+        img = image
+    else:
+        width, height = image.size
+
+        if width < height:
+            new_width = image_size
+            new_height = int(height * (image_size / width))
+        else:
+            new_height = image_size
+            new_width = int(width * (image_size / height))
+
+        if width > height:
+            new_width = (new_width // (patch_size * 4)) * (patch_size * 4)
+        else:
+            new_height = (new_height // (patch_size * 4)) * (patch_size * 4)
+
+        img = image.resize((new_width, new_height))
+
+    img_tensor = TF.to_tensor(img) * 255.0
+    entropy_maps = compute_patch_entropy_vectorized(img_tensor, patch_size, num_scales)
+    return entropy_maps[patch_size]
+
+
+def process_tensor_image(image_tensor, patch_size, num_scales=1):
+    if image_tensor.max() <= 1.0:
+        image_tensor = image_tensor * 255.0
+    entropy_maps = compute_patch_entropy_vectorized(image_tensor, patch_size, num_scales)
+    return entropy_maps[patch_size]
+
+
 def process_image(image_path, image_size, patch_size, num_scales, no_resize=False):
     """Process a single image and return the visualization based on the specified type and method."""
     print(f"Processing image: {image_path}")
@@ -81,37 +105,15 @@ def process_image(image_path, image_size, patch_size, num_scales, no_resize=Fals
     image = Image.open(image_path)
     print(f"Original image size: {image.size}")
     
-    if no_resize:
-        # Use original image without resizing
-        img = image
-        print("Using original image size (no resize)")
-    else:
-        # Find the image size
-        width, height = image.size
-
-        # Calculate the target size for the shorter side
-        # Make the shorter side always image_size
-        if width < height:
-            new_width = image_size
-            new_height = int(height * (image_size / width))
-        else:
-            new_height = image_size
-            new_width = int(width * (image_size / height))
-
-        # Adjust the longer side to be a multiple of patch_size * 4
-        if width > height:
-            new_width = (new_width // (patch_size * 4)) * (patch_size * 4)
-        else:
-            new_height = (new_height // (patch_size * 4)) * (patch_size * 4)
-
-        # Resize the image
-        img = image.resize((new_width, new_height))
-        print(f"Resized image size: {img.size}")
-    
-    img_tensor = TF.to_tensor(img) * 255.0
-    entropy_maps = compute_patch_entropy_vectorized(img_tensor, patch_size, num_scales)
-
-    return entropy_maps
+    entropy_map = process_pil_image(
+        image=image,
+        image_size=image_size,
+        patch_size=patch_size,
+        num_scales=num_scales,
+        no_resize=no_resize,
+    )
+    print(f"Entropy map size: {tuple(entropy_map.shape)}")
+    return entropy_map
 
 # should be called as
 # process_image(image_path, 366, 14, 3)

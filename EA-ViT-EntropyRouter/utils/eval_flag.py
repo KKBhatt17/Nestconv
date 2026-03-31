@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 import wandb
 
-from utils.entropy_router import build_entropy_router_input
+from utils.entropy_conditioning import build_router_input, entropy_score_from_vectors, select_lookup_entry
 
 def eval_stage1(model, valDataLoader, criterion, epoch, optimizer, args, flag, **kwargs):
     with tqdm(total=len(valDataLoader), postfix=dict, mininterval=0.3) as pbar:
@@ -38,7 +38,7 @@ def eval_stage1(model, valDataLoader, criterion, epoch, optimizer, args, flag, *
             wandb.log({"Epoch": epoch + 1, "val/Val Loss_" + flag: avg_loss})
             wandb.log({"Epoch": epoch + 1, "val/Val Acc_" + flag: accuracy})
 
-def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, constraint, device):
+def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, lookup_rows, device):
     with tqdm(total=len(valDataLoader), postfix=dict, mininterval=0.3) as pbar:
         pbar.set_description(f'eval Epoch {epoch + 1}/{args.epochs}')
 
@@ -61,16 +61,16 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, c
             correct = 0
             total = 0
 
-            for batch_idx, (img, label) in enumerate(valDataLoader):
+            for batch_idx, (img, label, entropy_vectors, _) in enumerate(valDataLoader):
                 img = img.to(device)
                 label = label.to(device)
-                batch_constraint = constraint.expand(img.size(0))
+
+                router_input = build_router_input(entropy_vectors, device)
+                target_entry = select_lookup_entry(lookup_rows, entropy_score_from_vectors(entropy_vectors))
+                target_macs = torch.tensor([target_entry["macs"]], device=device, dtype=torch.float32)
 
                 t = 1
-
-                router_input = build_entropy_router_input(img, patch_size=args.entropy_patch_size)
                 model.configure_router_input(router_input=router_input, tau=t)
-
                 preds, attn_mask, mlp_mask, embed_mask, depth_attn_mask, depth_mlp_mask, total_macs = model(img)
 
                 attn_mask = torch.mean(attn_mask)
@@ -81,7 +81,7 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, c
 
                 ce_loss = criterion(preds, label)
 
-                constraint_loss = torch.square(batch_constraint-total_macs).mean()
+                constraint_loss = torch.square(target_macs - total_macs.unsqueeze(0)).mean()
 
                 loss = ce_loss + constraint_loss
 
@@ -95,7 +95,7 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, c
                 total_depth_mlp_mask += depth_mlp_mask.item()
                 total_depth_attn_mask += depth_attn_mask.item()
 
-                total_macs_sum += total_macs.mean().item()
+                total_macs_sum += total_macs.item()
 
                 _, predicted = torch.max(preds, 1)
                 total += label.size(0)
@@ -115,8 +115,8 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, c
             val_depth_attn_mask = total_depth_attn_mask / len(valDataLoader)
             val_macs = total_macs_sum / len(valDataLoader)
 
-            correct = torch.tensor(correct, dtype=torch.float32, device='cuda')
-            total = torch.tensor(total, dtype=torch.float32, device='cuda')
+            correct = torch.tensor(correct, dtype=torch.float32, device=device)
+            total = torch.tensor(total, dtype=torch.float32, device=device)
 
             accuracy = correct / total
             print(f"Accuracy: {accuracy.item()}")
