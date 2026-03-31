@@ -46,7 +46,8 @@ def get_args_parser():
     parser.add_argument('--constraint', default=1.0, type=int)
     parser.add_argument('--entropy_patch_size', default=14, type=int)
     parser.add_argument('--entropy_lookup_path', default='', type=str, help='path to entropy lookup csv')
-    parser.add_argument('--lookup_batches', default=32, type=int, help='number of sorted batches used to build entropy lookup')
+    parser.add_argument('--lookup_batches', default=0, type=int, help='number of sorted batches used to build entropy lookup, 0 means all batches')
+    parser.add_argument('--nsga_eval_batches', default=8, type=int, help='number of representative entropy-sorted batches used to score each NSGA candidate')
 
     # Optimizer parameters
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',

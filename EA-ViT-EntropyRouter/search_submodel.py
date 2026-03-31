@@ -39,8 +39,7 @@ model = EAViTStage2(
 )
 device = args.device
 
-stage1_checkpoint_path = args.stage1_checkpoint_path
-checkpoint = torch.load(stage1_checkpoint_path, map_location=device)
+checkpoint = torch.load(args.stage1_checkpoint_path, map_location=device)
 model.load_state_dict(checkpoint, strict=False)
 model = model.to(device)
 model.eval()
@@ -55,6 +54,36 @@ if not hasattr(creator, "FitnessMulti"):
     creator.create("FitnessMulti", base.Fitness, weights=(-0.5, 1.0))
 if not hasattr(creator, "Individual"):
     creator.create("Individual", list, fitness=creator.FitnessMulti)
+
+
+def resolve_batch_limit(requested_batches, total_batches):
+    if requested_batches <= 0 or requested_batches > total_batches:
+        return total_batches
+    return requested_batches
+
+
+def collect_representative_batches(data_loader, requested_batches):
+    total_batches = len(data_loader)
+    if total_batches == 0:
+        raise RuntimeError("No batches available for NSGA evaluation.")
+
+    batch_limit = resolve_batch_limit(requested_batches, total_batches)
+    if batch_limit == total_batches:
+        target_indices = set(range(total_batches))
+    else:
+        target_indices = set(
+            torch.linspace(0, total_batches - 1, steps=batch_limit).round().long().tolist()
+        )
+
+    batches = []
+    for batch_index, batch in enumerate(data_loader):
+        if batch_index in target_indices:
+            batches.append(batch)
+
+    return batches
+
+
+REPRESENTATIVE_BATCHES = collect_representative_batches(trainDataLoader, args.nsga_eval_batches)
 
 
 def load_population_from_csv(csv_path, pop_size):
@@ -136,25 +165,33 @@ def individual_to_masks(vector):
     return embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask
 
 
+def evaluate_candidate_on_batch(candidate_encoding, img, label, entropy_vectors):
+    embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask = individual_to_masks(candidate_encoding)
+    router_input = build_router_input(entropy_vectors, device)
+    model.configure_router_input(router_input=router_input, tau=1)
+    model.set_mask(embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask)
+
+    preds, _, _, _, _, _, total_macs = model(img)
+    accuracy = (preds.argmax(dim=1) == label).float().mean().item()
+    return total_macs.item(), accuracy
+
+
 def evaluate(vector):
-    vector[0] = 1
+    candidate_encoding = list(vector)
+    candidate_encoding[0] = 1
+
+    total_accuracy = 0.0
+    total_macs = 0.0
 
     with torch.no_grad():
-        for img, label, entropy_vectors, _ in trainDataLoader:
+        for img, label, entropy_vectors, _ in REPRESENTATIVE_BATCHES:
             img = img.to(device)
             label = label.to(device)
-            router_input = build_router_input(entropy_vectors, device)
+            macs, accuracy = evaluate_candidate_on_batch(candidate_encoding, img, label, entropy_vectors)
+            total_accuracy += accuracy
+            total_macs += macs
 
-            model.configure_router_input(router_input=router_input, tau=1)
-            embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask = individual_to_masks(vector)
-            model.set_mask(embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask)
-
-            preds, _, _, _, _, _, total_macs = model(img)
-            _, predicted = torch.max(preds, 1)
-            accuracy = (predicted == label).float().mean().item()
-            return total_macs.item(), accuracy
-
-    raise RuntimeError("No batches available for NSGA evaluation.")
+    return total_macs / len(REPRESENTATIVE_BATCHES), total_accuracy / len(REPRESENTATIVE_BATCHES)
 
 
 def plot_pareto_front(population, generation):
@@ -182,7 +219,6 @@ def save_population(population, generation, file_path="population.csv"):
     pareto_front = tools.sortNondominated(population, len(population), first_front_only=True)[0]
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
     file_exists = os.path.isfile(file_path)
 
     with open(file_path, mode="a", newline="") as file:
@@ -203,7 +239,6 @@ def assign_macs_global_crowding(population):
 
     idx = np.argsort(macs_vals)
     vmin, vmax = macs_vals[idx[0]], macs_vals[idx[-1]]
-
     crowding_scores = np.zeros(count)
 
     if vmax > vmin:
@@ -281,10 +316,26 @@ def select_by_partition_incremental(pop, toolbox, cxpb, mutpb, quotas, bins, max
     return final_population
 
 
-def save_entropy_lookup(population, data_loader, file_path):
+def get_lookup_candidates(population):
     candidates = tools.sortNondominated(population, len(population), first_front_only=True)[0]
     if not candidates:
         candidates = population
+
+    unique_candidates = {}
+    for candidate in candidates:
+        encoding = "".join(map(str, candidate))
+        if encoding not in unique_candidates:
+            unique_candidates[encoding] = candidate
+
+    return sorted(
+        unique_candidates.values(),
+        key=lambda candidate: (candidate.fitness.values[0], -candidate.fitness.values[1]),
+    )
+
+
+def save_entropy_lookup(population, data_loader, file_path):
+    candidates = get_lookup_candidates(population)
+    lookup_batch_limit = resolve_batch_limit(args.lookup_batches, len(data_loader))
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
@@ -294,28 +345,35 @@ def save_entropy_lookup(population, data_loader, file_path):
 
         with torch.no_grad():
             for batch_index, (img, label, entropy_vectors, _) in enumerate(data_loader):
-                if batch_index >= args.lookup_batches:
+                if batch_index >= lookup_batch_limit:
                     break
 
                 img = img.to(device)
                 label = label.to(device)
-                router_input = build_router_input(entropy_vectors, device)
                 entropy_mean = entropy_score_from_vectors(entropy_vectors)
+
+                if len(candidates) == 1:
+                    candidate_indices = [0]
+                else:
+                    percentile = 0.0 if lookup_batch_limit == 1 else batch_index / (lookup_batch_limit - 1)
+                    target_index = int(round(percentile * (len(candidates) - 1)))
+                    candidate_indices = sorted(
+                        {
+                            max(0, target_index - 1),
+                            target_index,
+                            min(len(candidates) - 1, target_index + 1),
+                        }
+                    )
 
                 best_accuracy = -1.0
                 best_macs = float("inf")
                 best_encoding = None
 
-                for candidate in candidates:
+                for candidate_index in candidate_indices:
+                    candidate = candidates[candidate_index]
                     candidate_encoding = list(candidate)
                     candidate_encoding[0] = 1
-                    embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask = individual_to_masks(candidate_encoding)
-                    model.configure_router_input(router_input=router_input, tau=1)
-                    model.set_mask(embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask)
-
-                    preds, _, _, _, _, _, total_macs = model(img)
-                    accuracy = (preds.argmax(dim=1) == label).float().mean().item()
-                    macs = total_macs.item()
+                    macs, accuracy = evaluate_candidate_on_batch(candidate_encoding, img, label, entropy_vectors)
 
                     if accuracy > best_accuracy or (accuracy == best_accuracy and macs < best_macs):
                         best_accuracy = accuracy
