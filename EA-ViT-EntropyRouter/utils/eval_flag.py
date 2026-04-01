@@ -2,7 +2,12 @@ import torch
 from tqdm import tqdm
 import wandb
 
-from utils.entropy_conditioning import build_router_input, entropy_score_from_vectors, select_lookup_entry
+from utils.entropy_conditioning import (
+    build_router_input,
+    encoding_to_mask_tensors,
+    entropy_score_from_vectors,
+    select_lookup_entry,
+)
 
 def eval_stage1(model, valDataLoader, criterion, epoch, optimizer, args, flag, **kwargs):
     with tqdm(total=len(valDataLoader), postfix=dict, mininterval=0.3) as pbar:
@@ -47,7 +52,7 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, l
         with torch.no_grad():
             total_loss = 0.0
             total_ce_loss = 0.0
-            total_constraint_loss = 0.0
+            total_label_mask_loss = 0.0
 
             total_attn_mask = 0
             total_mlp_mask = 0
@@ -67,33 +72,42 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, l
 
                 router_input = build_router_input(entropy_vectors, device)
                 target_entry = select_lookup_entry(lookup_rows, entropy_score_from_vectors(entropy_vectors))
-                target_macs = torch.tensor([target_entry["macs"]], device=device, dtype=torch.float32)
+                label_mlp_mask, label_mha_mask, label_emb_mask, label_depth_mlp_mask, label_depth_attn_mask = encoding_to_mask_tensors(
+                    target_entry["encoding"],
+                    device,
+                )
 
                 t = 1
                 model.configure_router_input(router_input=router_input, tau=t)
                 preds, attn_mask, mlp_mask, embed_mask, depth_attn_mask, depth_mlp_mask, total_macs = model(img)
 
-                attn_mask = torch.mean(attn_mask)
-                mlp_mask = torch.mean(mlp_mask)
-                embed_mask = torch.mean(embed_mask)
-                depth_mlp_mask = torch.mean(depth_mlp_mask)
-                depth_attn_mask = torch.mean(depth_attn_mask)
+                attn_mask_mean = torch.mean(attn_mask)
+                mlp_mask_mean = torch.mean(mlp_mask)
+                embed_mask_mean = torch.mean(embed_mask)
+                depth_mlp_mask_mean = torch.mean(depth_mlp_mask)
+                depth_attn_mask_mean = torch.mean(depth_attn_mask)
 
                 ce_loss = criterion(preds, label)
 
-                constraint_loss = torch.square(target_macs - total_macs.unsqueeze(0)).mean()
+                label_mask_loss = (
+                    torch.nn.functional.mse_loss(attn_mask, label_mha_mask)
+                    + torch.nn.functional.mse_loss(mlp_mask, label_mlp_mask)
+                    + torch.nn.functional.mse_loss(embed_mask, label_emb_mask)
+                    + torch.nn.functional.mse_loss(depth_mlp_mask, label_depth_mlp_mask)
+                    + torch.nn.functional.mse_loss(depth_attn_mask, label_depth_attn_mask)
+                )
 
-                loss = ce_loss + constraint_loss
+                loss = ce_loss + label_mask_loss
 
                 total_loss += loss.item()
                 total_ce_loss += ce_loss.item()
-                total_constraint_loss += constraint_loss.item()
+                total_label_mask_loss += label_mask_loss.item()
 
-                total_attn_mask += attn_mask.item()
-                total_mlp_mask += mlp_mask.item()
-                total_embed_mask += embed_mask.item()
-                total_depth_mlp_mask += depth_mlp_mask.item()
-                total_depth_attn_mask += depth_attn_mask.item()
+                total_attn_mask += attn_mask_mean.item()
+                total_mlp_mask += mlp_mask_mean.item()
+                total_embed_mask += embed_mask_mean.item()
+                total_depth_mlp_mask += depth_mlp_mask_mean.item()
+                total_depth_attn_mask += depth_attn_mask_mean.item()
 
                 total_macs_sum += total_macs.item()
 
@@ -106,7 +120,7 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, l
 
             avg_loss = total_loss / len(valDataLoader)
             avg_ce_loss = total_ce_loss / len(valDataLoader)
-            avg_constraint_loss = total_constraint_loss / len(valDataLoader)
+            avg_label_mask_loss = total_label_mask_loss / len(valDataLoader)
 
             val_attn_mask = total_attn_mask / len(valDataLoader)
             val_mlp_mask = total_mlp_mask / len(valDataLoader)
@@ -122,7 +136,7 @@ def eval_stage2(model, valDataLoader, criterion, epoch, optimizer, args, flag, l
             print(f"Accuracy: {accuracy.item()}")
             wandb.log({"Epoch": epoch + 1, "val_loss/Val Loss_" + flag: avg_loss})
             wandb.log({"Epoch": epoch + 1, "val_loss/Val ce Loss_" + flag: avg_ce_loss})
-            wandb.log({"Epoch": epoch + 1, "val_loss/Val constraint Loss_" + flag: avg_constraint_loss})
+            wandb.log({"Epoch": epoch + 1, "val_loss/Val encoding Loss_" + flag: avg_label_mask_loss})
 
             wandb.log({"Epoch": epoch + 1, "acc/Val Acc_" + flag: accuracy})
 

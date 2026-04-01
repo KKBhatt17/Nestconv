@@ -341,7 +341,7 @@ def save_entropy_lookup(population, data_loader, file_path):
 
     with open(file_path, mode="w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["BatchIndex", "EntropyMean", "MACs", "Accuracy", "Encoding"])
+        writer.writerow(["BatchIndex", "EntropyMean", "Accuracy", "Encoding"])
 
         with torch.no_grad():
             for batch_index, (img, label, entropy_vectors, _) in enumerate(data_loader):
@@ -380,7 +380,7 @@ def save_entropy_lookup(population, data_loader, file_path):
                         best_macs = macs
                         best_encoding = "".join(map(str, candidate_encoding))
 
-                writer.writerow([batch_index, entropy_mean, best_macs, best_accuracy, best_encoding])
+                writer.writerow([batch_index, entropy_mean, best_accuracy, best_encoding])
 
 
 toolbox = base.Toolbox()

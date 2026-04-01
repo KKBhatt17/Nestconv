@@ -37,15 +37,16 @@ def load_entropy_lookup(file_name: str) -> List[Dict[str, object]]:
     with open(file_name, mode="r", newline="") as file:
         reader = csv.DictReader(file)
         for row in reader:
-            rows.append(
-                {
-                    "batch_index": int(row["BatchIndex"]),
-                    "entropy_mean": float(row["EntropyMean"]),
-                    "macs": float(row["MACs"]),
-                    "accuracy": float(row["Accuracy"]),
-                    "encoding": row["Encoding"],
-                }
-            )
+            parsed_row = {
+                "batch_index": int(row["BatchIndex"]),
+                "entropy_mean": float(row["EntropyMean"]),
+                "encoding": row["Encoding"],
+            }
+            if "Accuracy" in row and row["Accuracy"] not in (None, ""):
+                parsed_row["accuracy"] = float(row["Accuracy"])
+            if "MACs" in row and row["MACs"] not in (None, ""):
+                parsed_row["macs"] = float(row["MACs"])
+            rows.append(parsed_row)
 
     rows.sort(key=lambda item: item["entropy_mean"])
     return rows

@@ -30,14 +30,12 @@ def resolve_lookup_target(entropy_vectors, device, lookup_rows):
         lookup_entry["encoding"],
         device,
     )
-    target_macs = torch.tensor([lookup_entry["macs"]], device=device, dtype=torch.float32)
     return (
         label_mlp_mask,
         label_mha_mask,
         label_emb_mask,
         label_depth_mlp_mask,
         label_depth_attn_mask,
-        target_macs,
         entropy_mean,
     )
 
@@ -125,7 +123,6 @@ def train(args):
             label = label.to(args.device)
             router_input = build_router_input(entropy_vectors, args.device)
 
-            optimizer.zero_grad()
             model.configure_router_input(router_input=router_input, tau=1)
 
             preds, attn_mask, mlp_mask, embed_mask, depth_attn_mask, depth_mlp_mask, total_macs = model(img)
@@ -138,11 +135,9 @@ def train(args):
                 label_emb_mask,
                 label_depth_mlp_mask,
                 label_depth_attn_mask,
-                target_macs,
                 entropy_mean,
             ) = resolve_lookup_target(entropy_vectors, args.device, lookup_rows)
 
-            constraint_loss = F.mse_loss(total_macs, target_macs)
             label_mask_loss = (
                 F.mse_loss(attn_mask, label_mha_mask)
                 + F.mse_loss(mlp_mask, label_mlp_mask)
@@ -150,7 +145,7 @@ def train(args):
                 + F.mse_loss(depth_mlp_mask, label_depth_mlp_mask)
                 + F.mse_loss(depth_attn_mask, label_depth_attn_mask)
             )
-            loss = ce_loss + constraint_loss * 20 + label_mask_loss * 20
+            loss = label_mask_loss
             scaled_loss = loss / args.grad_accum_steps
 
             scaled_loss.backward()
@@ -166,10 +161,9 @@ def train(args):
                     {
                         "stage2_loss/total": loss.item(),
                         "stage2_loss/ce": ce_loss.item(),
-                        "stage2_loss/constraint": constraint_loss.item(),
-                        "stage2_loss/label_mask": label_mask_loss.item(),
+                        "stage2_loss/encoding": label_mask_loss.item(),
                         "stage2_signal/entropy_mean": entropy_mean,
-                        "stage2_signal/target_macs": target_macs.item(),
+                        "stage2_signal/routed_macs": total_macs.item(),
                         "lr": cur_lr,
                         "grad_accum_steps": args.grad_accum_steps,
                     },
@@ -207,7 +201,6 @@ def train(args):
 
             total_loss = 0
             total_ce_loss = 0
-            total_constraint_loss = 0
             total_label_mask_loss = 0
 
             total_attn_mask = 0
@@ -234,11 +227,9 @@ def train(args):
                     label_emb_mask,
                     label_depth_mlp_mask,
                     label_depth_attn_mask,
-                    target_macs,
                     entropy_mean,
                 ) = resolve_lookup_target(entropy_vectors, args.device, lookup_rows)
 
-                constraint_loss = F.mse_loss(total_macs, target_macs)
                 label_mask_loss = (
                     F.mse_loss(attn_mask, label_mha_mask)
                     + F.mse_loss(mlp_mask, label_mlp_mask)
@@ -247,7 +238,7 @@ def train(args):
                     + F.mse_loss(depth_attn_mask, label_depth_attn_mask)
                 )
 
-                loss = ce_loss + constraint_loss * 20 + label_mask_loss * 20 * (1 - epoch / args.epochs)
+                loss = ce_loss + label_mask_loss * 20 * (1 - epoch / args.epochs)
                 scaled_loss = loss / args.grad_accum_steps
 
                 attn_mask_mean = torch.mean(attn_mask)
@@ -258,15 +249,13 @@ def train(args):
 
                 if batch_idx % 10 == 0:
                     wandb.log({"train_batch_loss/batch cross entropy loss": ce_loss})
-                    wandb.log({"train_batch_loss/batch constraint loss": constraint_loss})
-                    wandb.log({"train_batch_loss/batch label mask loss": label_mask_loss})
+                    wandb.log({"train_batch_loss/batch encoding loss": label_mask_loss})
                     wandb.log({"train_batch_loss/train Batch Loss": loss.item()})
                     wandb.log({"train_batch_signal/entropy_mean": entropy_mean})
-                    wandb.log({"train_batch_signal/target_macs": target_macs.item()})
+                    wandb.log({"train_batch_signal/routed_macs": total_macs.item()})
 
                 total_loss += loss.item()
                 total_ce_loss += ce_loss.item()
-                total_constraint_loss += constraint_loss.item()
                 total_label_mask_loss += label_mask_loss.item()
 
                 total_attn_mask += attn_mask_mean.item()
@@ -287,7 +276,6 @@ def train(args):
 
             epoch_loss = total_loss / len(trainDataLoader)
             epoch_ce_loss = total_ce_loss / len(trainDataLoader)
-            epoch_constraint_loss = total_constraint_loss / len(trainDataLoader)
             epoch_label_mask_loss = total_label_mask_loss / len(trainDataLoader)
 
             epoch_attn_mask = total_attn_mask / len(trainDataLoader)
@@ -300,8 +288,7 @@ def train(args):
 
             wandb.log({"Epoch": epoch + 1, "train_epoch_loss/Train epoch Loss": epoch_loss})
             wandb.log({"Epoch": epoch + 1, "train_epoch_loss/Train epoch cross entropy loss": epoch_ce_loss})
-            wandb.log({"Epoch": epoch + 1, "train_epoch_loss/Train epoch constraint loss": epoch_constraint_loss})
-            wandb.log({"Epoch": epoch + 1, "train_epoch_loss/Train epoch label mask loss": epoch_label_mask_loss})
+            wandb.log({"Epoch": epoch + 1, "train_epoch_loss/Train epoch encoding loss": epoch_label_mask_loss})
 
             wandb.log({"Epoch": epoch + 1, "train_mask/Train attn mask": epoch_attn_mask})
             wandb.log({"Epoch": epoch + 1, "train_mask/Train mlp mask": epoch_mlp_mask})
