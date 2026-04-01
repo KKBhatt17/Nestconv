@@ -333,6 +333,14 @@ def get_lookup_candidates(population):
     )
 
 
+def accuracy_tolerance_for_position(batch_index, lookup_batch_limit):
+    if lookup_batch_limit <= 1:
+        position = 1.0
+    else:
+        position = batch_index / (lookup_batch_limit - 1)
+    return args.lookup_acc_tolerance_low + position * (args.lookup_acc_tolerance_high - args.lookup_acc_tolerance_low)
+
+
 def save_entropy_lookup(population, data_loader, file_path):
     candidates = get_lookup_candidates(population)
     lookup_batch_limit = resolve_batch_limit(args.lookup_batches, len(data_loader))
@@ -352,35 +360,28 @@ def save_entropy_lookup(population, data_loader, file_path):
                 label = label.to(device)
                 entropy_mean = entropy_score_from_vectors(entropy_vectors)
 
-                if len(candidates) == 1:
-                    candidate_indices = [0]
-                else:
-                    percentile = 0.0 if lookup_batch_limit == 1 else batch_index / (lookup_batch_limit - 1)
-                    target_index = int(round(percentile * (len(candidates) - 1)))
-                    candidate_indices = sorted(
-                        {
-                            max(0, target_index - 1),
-                            target_index,
-                            min(len(candidates) - 1, target_index + 1),
-                        }
-                    )
-
-                best_accuracy = -1.0
-                best_macs = float("inf")
-                best_encoding = None
-
-                for candidate_index in candidate_indices:
-                    candidate = candidates[candidate_index]
+                candidate_results = []
+                for candidate in candidates:
                     candidate_encoding = list(candidate)
                     candidate_encoding[0] = 1
                     macs, accuracy = evaluate_candidate_on_batch(candidate_encoding, img, label, entropy_vectors)
+                    candidate_results.append(
+                        {
+                            "macs": macs,
+                            "accuracy": accuracy,
+                            "encoding": "".join(map(str, candidate_encoding)),
+                        }
+                    )
 
-                    if accuracy > best_accuracy or (accuracy == best_accuracy and macs < best_macs):
-                        best_accuracy = accuracy
-                        best_macs = macs
-                        best_encoding = "".join(map(str, candidate_encoding))
+                best_accuracy = max(result["accuracy"] for result in candidate_results)
+                accuracy_tolerance = accuracy_tolerance_for_position(batch_index, lookup_batch_limit)
+                eligible_results = [
+                    result for result in candidate_results
+                    if result["accuracy"] >= best_accuracy - accuracy_tolerance
+                ]
+                chosen_result = min(eligible_results, key=lambda result: (result["macs"], -result["accuracy"]))
 
-                writer.writerow([batch_index, entropy_mean, best_accuracy, best_encoding])
+                writer.writerow([batch_index, entropy_mean, chosen_result["accuracy"], chosen_result["encoding"]])
 
 
 toolbox = base.Toolbox()
