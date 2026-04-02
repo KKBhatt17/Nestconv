@@ -40,6 +40,7 @@ def get_args_parser():
     parser.add_argument('--warmup_steps', default=50, type=int)
     parser.add_argument('--total_steps', default=1000, type=int)
     parser.add_argument('--grad_accum_steps', default=4, type=int)
+    parser.add_argument('--constraint_mlp_warmup_steps', default=200, type=int)
 
     parser.add_argument('--gen_id', default=300, type=int)
 
@@ -48,8 +49,7 @@ def get_args_parser():
     parser.add_argument('--entropy_lookup_path', default='', type=str, help='path to entropy lookup csv')
     parser.add_argument('--lookup_batches', default=0, type=int, help='number of sorted batches used to build entropy lookup, 0 means all batches')
     parser.add_argument('--nsga_eval_batches', default=8, type=int, help='number of representative entropy-sorted batches used to score each NSGA candidate')
-    parser.add_argument('--lookup_acc_tolerance_low', default=0.05, type=float, help='max accuracy drop allowed for low-entropy batches when preferring lower-MAC candidates')
-    parser.add_argument('--lookup_acc_tolerance_high', default=0.01, type=float, help='max accuracy drop allowed for high-entropy batches when preferring lower-MAC candidates')
+    parser.add_argument('--constraint_guide_path', default='', type=str, help='path to entropy mean to constraint guide csv')
 
     # Optimizer parameters
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',

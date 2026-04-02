@@ -6,7 +6,6 @@ DATASET="cifar10_full"
 DEVICE="cuda:0"
 CHECKPOINT="your trained checkpoint path after stage1"
 NSGA_path="./NSGA/cifar10.csv"
-ENTROPY_LOOKUP="./NSGA/cifar10_entropy_lookup.csv"
 
 python search_submodel.py \
   --stage $STAGE \
@@ -14,5 +13,4 @@ python search_submodel.py \
   --dataset $DATASET \
   --stage1_checkpoint_path $CHECKPOINT \
   --nsga_path $NSGA_path \
-  --entropy_lookup_path $ENTROPY_LOOKUP \
   --device $DEVICE \

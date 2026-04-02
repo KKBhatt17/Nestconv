@@ -8,7 +8,7 @@ MAX_LR=1e-5
 MIN_LR=1e-7
 CHECKPOINT="your trained checkpoint path after stage1"
 NSGA_path="./NSGA/cifar10.csv"
-ENTROPY_LOOKUP="./NSGA/cifar10_entropy_lookup.csv"
+CONSTRAINT_GUIDE="./NSGA/constraint_guide.csv"
 GEN_ID=300
 
 python train_stage2.py \
@@ -19,6 +19,6 @@ python train_stage2.py \
   --dataset $DATASET \
   --stage1_checkpoint_path $CHECKPOINT \
   --nsga_path $NSGA_path \
-  --entropy_lookup_path $ENTROPY_LOOKUP \
+  --constraint_guide_path $CONSTRAINT_GUIDE \
   --gen_id $GEN_ID \
   --device $DEVICE \

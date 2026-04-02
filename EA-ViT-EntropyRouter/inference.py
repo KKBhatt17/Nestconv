@@ -19,18 +19,21 @@ def eval_dynamic(model, valDataLoader, criterion, device):
             total = 0
             total_loss = 0.0
             total_macs = 0.0
+            total_constraint = 0.0
 
             for img, label, entropy_vectors, _ in valDataLoader:
                 img = img.to(device)
                 label = label.to(device)
+
                 router_input = build_router_input(entropy_vectors, device)
+                predicted_constraint = model.predict_constraint(router_input)
+                model.configure_constraint(predicted_constraint, tau=1)
 
-                model.configure_router_input(router_input=router_input, tau=1)
                 preds, _, _, _, _, _, sample_macs = model(img)
-
                 loss = criterion(preds, label)
                 total_loss += loss.item()
                 total_macs += sample_macs.item()
+                total_constraint += predicted_constraint.item()
 
                 _, predicted = torch.max(preds, 1)
                 total += label.size(0)
@@ -41,12 +44,13 @@ def eval_dynamic(model, valDataLoader, criterion, device):
             accuracy = 100.0 * correct / total
             average_loss = total_loss / len(valDataLoader)
             average_macs = total_macs / len(valDataLoader)
+            average_constraint = total_constraint / len(valDataLoader)
 
             print()
             print("val loss", average_loss)
             print("val acc", accuracy)
+            print("avg predicted constraint", average_constraint)
             print("avg routed macs", average_macs)
-
             pbar.close()
 
     return accuracy

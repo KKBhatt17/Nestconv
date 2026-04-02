@@ -6,25 +6,20 @@ from deap import algorithms, base, creator, tools
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from config import get_args_parser
-from dataloader.entropy_image_datasets import build_entropy_image_dataset, create_entropy_dataloader
+from dataloader.image_datasets import build_image_dataset
 from models.model_stage2 import EAViTStage2, ModifiedBlock
-from utils.entropy_conditioning import (
-    build_router_input,
-    default_entropy_lookup_path,
-    entropy_score_from_vectors,
-)
 
 
 random.seed(42)
 
 args = get_args_parser()
-router_input_dim = (args.input_size // args.entropy_patch_size) ** 2
 
-dataset_train, dataset_val, nb_classes = build_entropy_image_dataset(args)
-trainDataLoader = create_entropy_dataloader(args, dataset_train, shuffle_batches=False)
+dataset_train, dataset_val, nb_classes = build_image_dataset(args)
+trainDataLoader = DataLoader(dataset_train, args.batch_size, shuffle=True, num_workers=args.num_workers)
 
 model = EAViTStage2(
     embed_dim=768,
@@ -35,7 +30,6 @@ model = EAViTStage2(
     drop_path_rate=args.drop_path,
     qkv_bias=True,
     block=ModifiedBlock,
-    router_input_dim=router_input_dim,
 )
 device = args.device
 
@@ -54,36 +48,6 @@ if not hasattr(creator, "FitnessMulti"):
     creator.create("FitnessMulti", base.Fitness, weights=(-0.5, 1.0))
 if not hasattr(creator, "Individual"):
     creator.create("Individual", list, fitness=creator.FitnessMulti)
-
-
-def resolve_batch_limit(requested_batches, total_batches):
-    if requested_batches <= 0 or requested_batches > total_batches:
-        return total_batches
-    return requested_batches
-
-
-def collect_representative_batches(data_loader, requested_batches):
-    total_batches = len(data_loader)
-    if total_batches == 0:
-        raise RuntimeError("No batches available for NSGA evaluation.")
-
-    batch_limit = resolve_batch_limit(requested_batches, total_batches)
-    if batch_limit == total_batches:
-        target_indices = set(range(total_batches))
-    else:
-        target_indices = set(
-            torch.linspace(0, total_batches - 1, steps=batch_limit).round().long().tolist()
-        )
-
-    batches = []
-    for batch_index, batch in enumerate(data_loader):
-        if batch_index in target_indices:
-            batches.append(batch)
-
-    return batches
-
-
-REPRESENTATIVE_BATCHES = collect_representative_batches(trainDataLoader, args.nsga_eval_batches)
 
 
 def load_population_from_csv(csv_path, pop_size):
@@ -137,66 +101,49 @@ def create_individual_random():
     return [random.randint(0, 1) for _ in range(NUM_GENES)]
 
 
-def individual_to_masks(vector):
-    vector = list(vector)
+def evaluate(vector):
+    latency = torch.rand(1).to(device)
+    model.configure_constraint(constraint=latency, tau=1)
     vector[0] = 1
 
     embed_sum = int(sum(vector[:12]))
-    embed_mask = torch.tensor([1] * embed_sum + [0] * (12 - embed_sum), device=device, dtype=torch.float32)
+    embed_mask = torch.tensor([1] * embed_sum + [0] * (12 - embed_sum), device=device)
 
-    depth_attn_mask = torch.tensor(vector[12:24], device=device, dtype=torch.float32)
-    depth_mlp_mask = torch.tensor(vector[24:36], device=device, dtype=torch.float32)
+    depth_attn_mask = torch.tensor(vector[12:24], device=device)
+    depth_mlp_mask = torch.tensor(vector[24:36], device=device)
 
     mask_attn = []
     mask_mlp = []
 
-    for index in range(12):
-        attn_sum = int(sum(vector[36 + index * 12: 36 + (index + 1) * 12]))
-        mask_attn.append(
-            torch.tensor([1] * attn_sum + [0] * (12 - attn_sum), device=device, dtype=torch.float32)
-        )
+    for i in range(12):
+        attn_sum = int(sum(vector[36 + i * 12: 36 + (i + 1) * 12]))
+        mask_attn.append(torch.tensor([1] * attn_sum + [0] * (12 - attn_sum), device=device))
 
-    for index in range(12):
-        mlp_sum = int(sum(vector[180 + index * 8: 180 + (index + 1) * 8]))
-        mask_mlp.append(
-            torch.tensor([1] * mlp_sum + [0] * (8 - mlp_sum), device=device, dtype=torch.float32)
-        )
+    for i in range(12):
+        mlp_sum = int(sum(vector[180 + i * 8: 180 + (i + 1) * 8]))
+        mask_mlp.append(torch.tensor([1] * mlp_sum + [0] * (8 - mlp_sum), device=device))
 
-    return embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask
-
-
-def evaluate_candidate_on_batch(candidate_encoding, img, label, entropy_vectors):
-    embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask = individual_to_masks(candidate_encoding)
-    router_input = build_router_input(entropy_vectors, device)
-    model.configure_router_input(router_input=router_input, tau=1)
     model.set_mask(embed_mask, mask_attn, mask_mlp, depth_attn_mask, depth_mlp_mask)
 
-    preds, _, _, _, _, _, total_macs = model(img)
-    accuracy = (preds.argmax(dim=1) == label).float().mean().item()
-    return total_macs.item(), accuracy
-
-
-def evaluate(vector):
-    candidate_encoding = list(vector)
-    candidate_encoding[0] = 1
-
-    total_accuracy = 0.0
-    total_macs = 0.0
-
     with torch.no_grad():
-        for img, label, entropy_vectors, _ in REPRESENTATIVE_BATCHES:
+        correct = 0
+        total = 0
+        for img, label in trainDataLoader:
             img = img.to(device)
             label = label.to(device)
-            macs, accuracy = evaluate_candidate_on_batch(candidate_encoding, img, label, entropy_vectors)
-            total_accuracy += accuracy
-            total_macs += macs
+            preds, _, _, _, _, _, total_macs = model(img)
+            _, predicted = torch.max(preds, 1)
+            total += label.size(0)
+            correct += (predicted == label).sum().item()
+            break
 
-    return total_macs / len(REPRESENTATIVE_BATCHES), total_accuracy / len(REPRESENTATIVE_BATCHES)
+        accuracy = correct / total
+
+    return total_macs.item(), accuracy
 
 
 def plot_pareto_front(population, generation):
     plt.figure(figsize=(10, 6))
-
     macs = [individual.fitness.values[0] for individual in population]
     acc = [individual.fitness.values[1] for individual in population]
 
@@ -206,7 +153,6 @@ def plot_pareto_front(population, generation):
 
     plt.scatter(macs, acc, c="blue", alpha=0.5, label="Population")
     plt.scatter(f_macs, f_acc, c="red", marker="x", label="Pareto Front")
-
     plt.xlabel("MACs", fontsize=12)
     plt.ylabel("Accuracy", fontsize=12)
     plt.title(f"Pareto Front @ Generation {generation}", fontsize=14)
@@ -234,17 +180,17 @@ def save_population(population, generation, file_path="population.csv"):
 
 
 def assign_macs_global_crowding(population):
-    count = len(population)
+    population_size = len(population)
     macs_vals = np.array([individual.fitness.values[0] for individual in population])
 
     idx = np.argsort(macs_vals)
     vmin, vmax = macs_vals[idx[0]], macs_vals[idx[-1]]
-    crowding_scores = np.zeros(count)
+    crowding_scores = np.zeros(population_size)
 
     if vmax > vmin:
         crowding_scores[idx[0]] = (macs_vals[idx[1]] - vmin) / (vmax - vmin)
         crowding_scores[idx[-1]] = (vmax - macs_vals[idx[-2]]) / (vmax - vmin)
-    for k in range(1, count - 1):
+    for k in range(1, population_size - 1):
         i = idx[k]
         crowding_scores[i] = (macs_vals[idx[k + 1]] - macs_vals[idx[k - 1]]) / (vmax - vmin + 1e-12)
 
@@ -275,8 +221,7 @@ def select_by_partition_incremental(pop, toolbox, cxpb, mutpb, quotas, bins, max
 
             for front in fronts:
                 candidates = [
-                    individual
-                    for individual in front
+                    individual for individual in front
                     if (index < len(quotas) - 1 and low <= individual.fitness.values[0] < high)
                     or (index == len(quotas) - 1 and low <= individual.fitness.values[0] <= high)
                 ]
@@ -291,7 +236,7 @@ def select_by_partition_incremental(pop, toolbox, cxpb, mutpb, quotas, bins, max
                     mac = individual.fitness.values[0]
                     if code in seen_codes:
                         continue
-                    if any(abs(mac - existing.fitness.values[0]) < min_mac_diff for existing in selected_bin):
+                    if any(abs(mac - selected_individual.fitness.values[0]) < min_mac_diff for selected_individual in selected_bin):
                         continue
                     seen_codes.add(code)
                     selected_bin.append(individual)
@@ -316,78 +261,9 @@ def select_by_partition_incremental(pop, toolbox, cxpb, mutpb, quotas, bins, max
     return final_population
 
 
-def get_lookup_candidates(population):
-    candidates = tools.sortNondominated(population, len(population), first_front_only=True)[0]
-    if not candidates:
-        candidates = population
-
-    unique_candidates = {}
-    for candidate in candidates:
-        encoding = "".join(map(str, candidate))
-        if encoding not in unique_candidates:
-            unique_candidates[encoding] = candidate
-
-    return sorted(
-        unique_candidates.values(),
-        key=lambda candidate: (candidate.fitness.values[0], -candidate.fitness.values[1]),
-    )
-
-
-def accuracy_tolerance_for_position(batch_index, lookup_batch_limit):
-    if lookup_batch_limit <= 1:
-        position = 1.0
-    else:
-        position = batch_index / (lookup_batch_limit - 1)
-    return args.lookup_acc_tolerance_low + position * (args.lookup_acc_tolerance_high - args.lookup_acc_tolerance_low)
-
-
-def save_entropy_lookup(population, data_loader, file_path):
-    candidates = get_lookup_candidates(population)
-    lookup_batch_limit = resolve_batch_limit(args.lookup_batches, len(data_loader))
-
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-    with open(file_path, mode="w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(["BatchIndex", "EntropyMean", "Accuracy", "Encoding"])
-
-        with torch.no_grad():
-            for batch_index, (img, label, entropy_vectors, _) in enumerate(data_loader):
-                if batch_index >= lookup_batch_limit:
-                    break
-
-                img = img.to(device)
-                label = label.to(device)
-                entropy_mean = entropy_score_from_vectors(entropy_vectors)
-
-                candidate_results = []
-                for candidate in candidates:
-                    candidate_encoding = list(candidate)
-                    candidate_encoding[0] = 1
-                    macs, accuracy = evaluate_candidate_on_batch(candidate_encoding, img, label, entropy_vectors)
-                    candidate_results.append(
-                        {
-                            "macs": macs,
-                            "accuracy": accuracy,
-                            "encoding": "".join(map(str, candidate_encoding)),
-                        }
-                    )
-
-                best_accuracy = max(result["accuracy"] for result in candidate_results)
-                accuracy_tolerance = accuracy_tolerance_for_position(batch_index, lookup_batch_limit)
-                eligible_results = [
-                    result for result in candidate_results
-                    if result["accuracy"] >= best_accuracy - accuracy_tolerance
-                ]
-                chosen_result = min(eligible_results, key=lambda result: (result["macs"], -result["accuracy"]))
-
-                writer.writerow([batch_index, entropy_mean, chosen_result["accuracy"], chosen_result["encoding"]])
-
-
 toolbox = base.Toolbox()
 toolbox.register("individual", tools.initIterate, creator.Individual, create_individual)
 toolbox.register("individual_random", tools.initIterate, creator.Individual, create_individual_random)
-
 toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 toolbox.register("mate", tools.cxTwoPoint)
 toolbox.register("mutate", tools.mutFlipBit, indpb=MUTATION_PROBABILITY)
@@ -415,14 +291,12 @@ def main():
             individual.fitness.values = fit
 
     hof = tools.ParetoFront()
-
     fitnesses = toolbox.map(toolbox.evaluate, population)
     for individual, fit in zip(population, fitnesses):
         individual.fitness.values = fit
 
     for generation in tqdm(range(start_gen, GENERATIONS)):
         random.shuffle(population)
-
         population = select_by_partition_incremental(
             population,
             toolbox,
@@ -434,13 +308,8 @@ def main():
             pop_size=POPULATION_SIZE,
             min_mac_diff=0.002,
         )
-
         hof.update(population)
         save_population(population, generation, file_path=csv_path)
-
-    entropy_lookup_path = args.entropy_lookup_path or default_entropy_lookup_path(args.nsga_path)
-    save_entropy_lookup(list(hof) if len(hof) > 0 else population, trainDataLoader, entropy_lookup_path)
-    print(f"Saved entropy lookup to {entropy_lookup_path}")
 
 
 if __name__ == "__main__":
