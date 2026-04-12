@@ -1,0 +1,20 @@
+base_config: imagenet1k.yaml
+
+dataset:
+  name: cifar100
+  root: /path/to/cifar100
+
+runtime:
+  batch_size: 128
+  num_workers: 4
+
+stage1:
+  output_checkpoint: outputs/rearranged/cifar100_vit_base_rearranged.pt
+
+stage2:
+  checkpoint_path: outputs/rearranged/cifar100_vit_base_rearranged.pt
+  output_dir: outputs/elastic/cifar100
+
+stage3:
+  elastic_checkpoint: outputs/elastic/cifar100/elastic_epoch_30.pt
+  output_dir: outputs/router/cifar100

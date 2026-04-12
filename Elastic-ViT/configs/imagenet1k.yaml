@@ -1,0 +1,59 @@
+dataset:
+  name: imagenet1k
+  root: /path/to/imagenet
+  image_size: 224
+  patch_size: 16
+  entropy_num_scales: 2
+
+runtime:
+  device: cuda
+  batch_size: 64
+  num_workers: 8
+
+stage1:
+  input_checkpoint: /path/to/vit_base_patch16_224_pretrained.pth
+  output_checkpoint: outputs/rearranged/imagenet1k_vit_base_rearranged.pt
+  num_layers: 12
+  embed_dim: 768
+  max_heads: 12
+
+stage2:
+  model_name: vit_base_patch16_224
+  use_timm_pretrained: false
+  checkpoint_path: outputs/rearranged/imagenet1k_vit_base_rearranged.pt
+  output_dir: outputs/elastic/imagenet1k
+  epochs: 30
+  mlp_choices: [768, 1536, 2304, 3072]
+  head_choices: [3, 6, 9, 12]
+  curriculum:
+    unlock_fractions: [0.0, 0.25, 0.5, 0.75]
+  optimizer:
+    lr: 1.0e-4
+    weight_decay: 0.05
+  eval_presets:
+    - {name: largest, mlp_width: 3072, num_heads: 12}
+    - {name: large, mlp_width: 3072, num_heads: 9}
+    - {name: medium, mlp_width: 2304, num_heads: 9}
+    - {name: small, mlp_width: 1536, num_heads: 6}
+    - {name: smallest, mlp_width: 768, num_heads: 3}
+
+stage3:
+  model_name: vit_base_patch16_224
+  elastic_checkpoint: outputs/elastic/imagenet1k/elastic_epoch_30.pt
+  output_dir: outputs/router/imagenet1k
+  entropy_cache_dir: outputs/entropy_cache
+  epochs: 15
+  mlp_choices: [768, 1536, 2304, 3072]
+  head_choices: [3, 6, 9, 12]
+  router_hidden_dim: 64
+  lambda_param: 1.0e-7
+  beta: 1.0
+  kd_threshold: 0.02
+  distillation_temperature: 1.0
+  temperature:
+    start: 5.0
+    min: 0.5
+    decay: 0.9
+  optimizer:
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
