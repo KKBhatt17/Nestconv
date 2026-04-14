@@ -16,3 +16,13 @@ python -m elastic_vit.cli train-router --config configs/imagenet1k.yaml
 ```
 
 Shell wrappers are available in `scripts/`.
+
+## Supported Datasets
+
+- ImageNet-1K
+- CIFAR-10
+- CIFAR-100
+- FGVC Aircraft
+- Stanford Cars
+- Oxford IIIT Pets
+- CUB-200-2011 via a custom loader for the official metadata layout

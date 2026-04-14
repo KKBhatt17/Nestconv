@@ -1,0 +1,16 @@
+base_config: imagenet1k.yaml
+
+dataset:
+  name: oxford_iiit_pets
+  root: /path/to/oxford_iiit_pet
+
+runtime:
+  batch_size: 64
+  num_workers: 4
+
+stage2:
+  output_dir: outputs/elastic/oxford_iiit_pets
+
+stage3:
+  elastic_checkpoint: outputs/elastic/oxford_iiit_pets/elastic_epoch_30.pt
+  output_dir: outputs/router/oxford_iiit_pets

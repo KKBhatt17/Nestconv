@@ -1,0 +1,16 @@
+base_config: imagenet1k.yaml
+
+dataset:
+  name: cub200
+  root: /path/to/CUB_200_2011
+
+runtime:
+  batch_size: 64
+  num_workers: 4
+
+stage2:
+  output_dir: outputs/elastic/cub200
+
+stage3:
+  elastic_checkpoint: outputs/elastic/cub200/elastic_epoch_30.pt
+  output_dir: outputs/router/cub200

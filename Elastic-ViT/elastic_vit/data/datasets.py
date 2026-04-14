@@ -6,6 +6,7 @@ from typing import Dict, Tuple
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+from elastic_vit.data.cub import CUB200Dataset
 from elastic_vit.data.entropy_cache import IndexedDataset
 from elastic_vit.data.samplers import EntropySortedBatchSampler
 
@@ -14,6 +15,10 @@ DATASET_NUM_CLASSES = {
     "imagenet1k": 1000,
     "cifar10": 10,
     "cifar100": 100,
+    "fgvc_aircraft": 100,
+    "stanford_cars": 196,
+    "oxford_iiit_pets": 37,
+    "cub200": 200,
 }
 
 
@@ -48,6 +53,30 @@ def _build_raw_dataset(name: str, root: str | Path, split: str, transform):
         return datasets.CIFAR10(root=root, train=split == "train", transform=transform, download=False)
     if dataset_name == "cifar100":
         return datasets.CIFAR100(root=root, train=split == "train", transform=transform, download=False)
+    if dataset_name == "fgvc_aircraft":
+        target_split = "train" if split == "train" else "val"
+        return datasets.FGVCAircraft(
+            root=root,
+            split=target_split,
+            annotation_level="variant",
+            transform=transform,
+            download=False,
+        )
+    if dataset_name == "stanford_cars":
+        target_split = "train" if split == "train" else "test"
+        return datasets.StanfordCars(root=root, split=target_split, transform=transform, download=False)
+    if dataset_name == "oxford_iiit_pets":
+        target_split = "trainval" if split == "train" else "test"
+        return datasets.OxfordIIITPet(
+            root=root,
+            split=target_split,
+            target_types="category",
+            transform=transform,
+            download=False,
+        )
+    if dataset_name == "cub200":
+        target_split = "train" if split == "train" else "test"
+        return CUB200Dataset(root=root, split=target_split, transform=transform)
     raise ValueError(f"Unsupported dataset: {name}")
 
 
