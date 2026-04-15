@@ -26,3 +26,9 @@ Shell wrappers are available in `scripts/`.
 - Stanford Cars
 - Oxford IIIT Pets
 - CUB-200-2011 via a custom loader for the official metadata layout
+- COCO 2017 as an 80-way multilabel classification benchmark using image-level object-presence labels
+
+## Task Notes
+
+- Standard datasets use multiclass training with cross-entropy and top-1 accuracy.
+- COCO uses multilabel training with BCE-with-logits and reports precision, recall, and F1.

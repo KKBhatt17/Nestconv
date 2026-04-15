@@ -6,19 +6,21 @@ from typing import Dict, Tuple
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+from elastic_vit.data.coco import COCO_CLASS_NAMES, CocoMultilabelDataset
 from elastic_vit.data.cub import CUB200Dataset
 from elastic_vit.data.entropy_cache import IndexedDataset
 from elastic_vit.data.samplers import EntropySortedBatchSampler
 
 
-DATASET_NUM_CLASSES = {
-    "imagenet1k": 1000,
-    "cifar10": 10,
-    "cifar100": 100,
-    "fgvc_aircraft": 100,
-    "stanford_cars": 196,
-    "oxford_iiit_pets": 37,
-    "cub200": 200,
+DATASET_METADATA = {
+    "imagenet1k": {"num_classes": 1000, "task_type": "multiclass"},
+    "cifar10": {"num_classes": 10, "task_type": "multiclass"},
+    "cifar100": {"num_classes": 100, "task_type": "multiclass"},
+    "fgvc_aircraft": {"num_classes": 100, "task_type": "multiclass"},
+    "stanford_cars": {"num_classes": 196, "task_type": "multiclass"},
+    "oxford_iiit_pets": {"num_classes": 37, "task_type": "multiclass"},
+    "cub200": {"num_classes": 200, "task_type": "multiclass"},
+    "coco": {"num_classes": len(COCO_CLASS_NAMES), "task_type": "multilabel"},
 }
 
 
@@ -77,7 +79,17 @@ def _build_raw_dataset(name: str, root: str | Path, split: str, transform):
     if dataset_name == "cub200":
         target_split = "train" if split == "train" else "test"
         return CUB200Dataset(root=root, split=target_split, transform=transform)
+    if dataset_name == "coco":
+        target_split = "train" if split == "train" else "val"
+        return CocoMultilabelDataset(root=root, split=target_split, transform=transform)
     raise ValueError(f"Unsupported dataset: {name}")
+
+
+def get_dataset_metadata(name: str) -> Dict[str, object]:
+    dataset_name = name.lower()
+    if dataset_name not in DATASET_METADATA:
+        raise ValueError(f"Unsupported dataset metadata lookup: {name}")
+    return DATASET_METADATA[dataset_name]
 
 
 def build_dataset(name: str, root: str | Path, split: str, image_size: int):

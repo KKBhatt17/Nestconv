@@ -1,0 +1,16 @@
+base_config: imagenet1k.yaml
+
+dataset:
+  name: coco
+  root: /path/to/coco
+
+runtime:
+  batch_size: 64
+  num_workers: 4
+
+stage2:
+  output_dir: outputs/elastic/coco
+
+stage3:
+  elastic_checkpoint: outputs/elastic/coco/elastic_epoch_30.pt
+  output_dir: outputs/router/coco

@@ -9,13 +9,13 @@ import torch
 from torch.optim import AdamW
 from tqdm import tqdm
 
-from elastic_vit.data.datasets import DATASET_NUM_CLASSES, build_standard_dataloaders
+from elastic_vit.data.datasets import build_standard_dataloaders, get_dataset_metadata
 from elastic_vit.engine.evaluate import evaluate_subnetwork_levels
 from elastic_vit.engine.losses import classification_loss
 from elastic_vit.models.common import SubnetworkConfig
 from elastic_vit.models.elastic_vit import ElasticVisionTransformer
 from elastic_vit.utils.io import ensure_dir, save_checkpoint
-from elastic_vit.utils.metrics import AverageMeter, accuracy_top1
+from elastic_vit.utils.metrics import AverageMeter, accuracy_top1, multilabel_precision_recall_f1
 
 
 def get_unlocked_choice_count(epoch: int, epochs: int, unlock_fractions: List[float]) -> int:
@@ -39,7 +39,9 @@ def run_elastic_training(config: Dict) -> None:
     step_cfg = config["stage2"]
 
     device = torch.device(runtime_cfg["device"])
-    num_classes = DATASET_NUM_CLASSES[dataset_cfg["name"].lower()]
+    dataset_meta = get_dataset_metadata(dataset_cfg["name"])
+    num_classes = int(dataset_meta["num_classes"])
+    task_type = str(dataset_meta["task_type"])
     model = ElasticVisionTransformer(
         model_name=step_cfg.get("model_name", "vit_base_patch16_224"),
         pretrained=step_cfg.get("use_timm_pretrained", False),
@@ -63,7 +65,10 @@ def run_elastic_training(config: Dict) -> None:
     for epoch in range(step_cfg["epochs"]):
         model.train()
         loss_meter = AverageMeter()
-        acc_meter = AverageMeter()
+        primary_meter = AverageMeter()
+        precision_meter = AverageMeter()
+        recall_meter = AverageMeter()
+        f1_meter = AverageMeter()
         unlocked_choice_count = get_unlocked_choice_count(
             epoch,
             step_cfg["epochs"],
@@ -82,13 +87,20 @@ def run_elastic_training(config: Dict) -> None:
 
             optimizer.zero_grad(set_to_none=True)
             logits = model(images, config=chosen_config)
-            loss = classification_loss(logits, targets)
+            loss = classification_loss(logits, targets, task_type=task_type)
             loss.backward()
             optimizer.step()
 
             batch_size = images.size(0)
             loss_meter.update(loss.item(), batch_size)
-            acc_meter.update(accuracy_top1(logits, targets), batch_size)
+            if task_type == "multilabel":
+                metrics = multilabel_precision_recall_f1(logits, targets)
+                primary_meter.update(metrics["f1"], batch_size)
+                precision_meter.update(metrics["precision"], batch_size)
+                recall_meter.update(metrics["recall"], batch_size)
+                f1_meter.update(metrics["f1"], batch_size)
+            else:
+                primary_meter.update(accuracy_top1(logits, targets), batch_size)
 
         eval_results = evaluate_subnetwork_levels(
             model,
@@ -96,14 +108,20 @@ def run_elastic_training(config: Dict) -> None:
             device,
             step_cfg["eval_presets"],
             model.num_layers,
+            task_type=task_type,
         )
         epoch_summary = {
             "epoch": epoch + 1,
             "train_loss": loss_meter.avg,
-            "train_top1": acc_meter.avg,
             "unlocked_choice_count": unlocked_choice_count,
             "evaluations": eval_results,
         }
+        if task_type == "multilabel":
+            epoch_summary["train_precision"] = precision_meter.avg
+            epoch_summary["train_recall"] = recall_meter.avg
+            epoch_summary["train_f1"] = f1_meter.avg
+        else:
+            epoch_summary["train_top1"] = primary_meter.avg
         history.append(epoch_summary)
         print(json.dumps(epoch_summary, indent=2))
 

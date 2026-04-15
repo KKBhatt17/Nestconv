@@ -9,25 +9,28 @@ from torch.optim import AdamW
 from tqdm import tqdm
 
 from elastic_vit.data.datasets import (
-    DATASET_NUM_CLASSES,
     build_entropy_sorted_loader,
     build_entropy_source_dataset,
+    get_dataset_metadata,
 )
 from elastic_vit.data.entropy_cache import build_entropy_cache, lookup_batch_entropy
-from elastic_vit.engine.losses import distillation_kl
+from elastic_vit.engine.losses import distillation_loss
 from elastic_vit.models.elastic_vit import ElasticVisionTransformer
 from elastic_vit.models.router import EntropyRouter, expected_router_param_cost
 from elastic_vit.utils.flops import estimate_vit_macs
 from elastic_vit.utils.io import ensure_dir, save_checkpoint
-from elastic_vit.utils.metrics import AverageMeter, accuracy_top1
+from elastic_vit.utils.metrics import AverageMeter, accuracy_top1, multilabel_precision_recall_f1
 
 
 @torch.no_grad()
-def evaluate_router(model, router, data_loader, entropy_values, device, step_cfg):
+def evaluate_router(model, router, data_loader, entropy_values, device, step_cfg, task_type: str):
     model.eval()
     router.eval()
     loss_meter = AverageMeter()
-    acc_meter = AverageMeter()
+    primary_meter = AverageMeter()
+    precision_meter = AverageMeter()
+    recall_meter = AverageMeter()
+    f1_meter = AverageMeter()
     macs_meter = AverageMeter()
 
     for images, targets, indices in tqdm(data_loader, desc="router eval", leave=False):
@@ -38,7 +41,12 @@ def evaluate_router(model, router, data_loader, entropy_values, device, step_cfg
 
         logits = model(images, config=config)
         full_logits = model(images)
-        kd_loss = distillation_kl(logits, full_logits, temperature=step_cfg["distillation_temperature"])
+        kd_loss = distillation_loss(
+            logits,
+            full_logits,
+            task_type=task_type,
+            temperature=step_cfg["distillation_temperature"],
+        )
         one_hot_mlp = torch.zeros(model.num_layers, len(step_cfg["mlp_choices"]), device=device)
         one_hot_head = torch.zeros(model.num_layers, len(step_cfg["head_choices"]), device=device)
         for layer_idx, mlp_width in enumerate(config.mlp_widths):
@@ -56,15 +64,28 @@ def evaluate_router(model, router, data_loader, entropy_values, device, step_cfg
             step_cfg["lambda_param"] * efficiency_loss
             + step_cfg["beta"] * torch.relu(kd_loss - step_cfg["kd_threshold"])
         )
-        acc = accuracy_top1(logits, targets)
         macs = estimate_vit_macs(model.embed_dim, config)
 
         batch_size = images.size(0)
         loss_meter.update(loss.item(), batch_size)
-        acc_meter.update(acc, batch_size)
+        if task_type == "multilabel":
+            metrics = multilabel_precision_recall_f1(logits, targets)
+            primary_meter.update(metrics["f1"], batch_size)
+            precision_meter.update(metrics["precision"], batch_size)
+            recall_meter.update(metrics["recall"], batch_size)
+            f1_meter.update(metrics["f1"], batch_size)
+        else:
+            primary_meter.update(accuracy_top1(logits, targets), batch_size)
         macs_meter.update(float(macs), batch_size)
 
-    return {"loss": loss_meter.avg, "top1": acc_meter.avg, "macs": macs_meter.avg}
+    result = {"loss": loss_meter.avg, "macs": macs_meter.avg}
+    if task_type == "multilabel":
+        result["precision"] = precision_meter.avg
+        result["recall"] = recall_meter.avg
+        result["f1"] = f1_meter.avg
+    else:
+        result["top1"] = primary_meter.avg
+    return result
 
 
 def run_router_training(config: Dict) -> None:
@@ -72,7 +93,9 @@ def run_router_training(config: Dict) -> None:
     runtime_cfg = config["runtime"]
     step_cfg = config["stage3"]
     device = torch.device(runtime_cfg["device"])
-    num_classes = DATASET_NUM_CLASSES[dataset_cfg["name"].lower()]
+    dataset_meta = get_dataset_metadata(dataset_cfg["name"])
+    num_classes = int(dataset_meta["num_classes"])
+    task_type = str(dataset_meta["task_type"])
 
     model = ElasticVisionTransformer(
         model_name=step_cfg.get("model_name", "vit_base_patch16_224"),
@@ -136,7 +159,10 @@ def run_router_training(config: Dict) -> None:
     for epoch in range(step_cfg["epochs"]):
         router.train()
         loss_meter = AverageMeter()
-        acc_meter = AverageMeter()
+        primary_meter = AverageMeter()
+        precision_meter = AverageMeter()
+        recall_meter = AverageMeter()
+        f1_meter = AverageMeter()
         macs_meter = AverageMeter()
 
         temperature = max(
@@ -156,7 +182,12 @@ def run_router_training(config: Dict) -> None:
             with torch.no_grad():
                 teacher_logits = model(images)
             student_logits = model(images, soft_config=soft_config)
-            kd_loss = distillation_kl(student_logits, teacher_logits, temperature=step_cfg["distillation_temperature"])
+            kd_loss = distillation_loss(
+                student_logits,
+                teacher_logits,
+                task_type=task_type,
+                temperature=step_cfg["distillation_temperature"],
+            )
             efficiency_loss = expected_router_param_cost(
                 soft_config.mlp_probabilities,
                 soft_config.head_probabilities,
@@ -176,18 +207,30 @@ def run_router_training(config: Dict) -> None:
                 hard_logits = model(images, config=hard_config)
             batch_size = images.size(0)
             loss_meter.update(total_loss.item(), batch_size)
-            acc_meter.update(accuracy_top1(hard_logits, targets), batch_size)
+            if task_type == "multilabel":
+                metrics = multilabel_precision_recall_f1(hard_logits, targets)
+                primary_meter.update(metrics["f1"], batch_size)
+                precision_meter.update(metrics["precision"], batch_size)
+                recall_meter.update(metrics["recall"], batch_size)
+                f1_meter.update(metrics["f1"], batch_size)
+            else:
+                primary_meter.update(accuracy_top1(hard_logits, targets), batch_size)
             macs_meter.update(float(estimate_vit_macs(model.embed_dim, hard_config)), batch_size)
 
-        eval_metrics = evaluate_router(model, router, val_loader, val_entropy_values, device, step_cfg)
+        eval_metrics = evaluate_router(model, router, val_loader, val_entropy_values, device, step_cfg, task_type=task_type)
         epoch_summary = {
             "epoch": epoch + 1,
             "temperature": temperature,
             "train_loss": loss_meter.avg,
-            "train_top1": acc_meter.avg,
             "train_macs": macs_meter.avg,
             "eval": eval_metrics,
         }
+        if task_type == "multilabel":
+            epoch_summary["train_precision"] = precision_meter.avg
+            epoch_summary["train_recall"] = recall_meter.avg
+            epoch_summary["train_f1"] = f1_meter.avg
+        else:
+            epoch_summary["train_top1"] = primary_meter.avg
         history.append(epoch_summary)
         print(json.dumps(epoch_summary, indent=2))
 
