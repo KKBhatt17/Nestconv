@@ -1,0 +1,9 @@
+torch
+torchvision
+timm
+transformers
+PyYAML
+tqdm
+Pillow
+pycocotools
+safetensors

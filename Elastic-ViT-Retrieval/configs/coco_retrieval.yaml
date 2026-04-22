@@ -1,0 +1,64 @@
+dataset:
+  name: coco_retrieval
+  root: /path/to/coco
+  image_size: 224
+  patch_size: 16
+  entropy_num_scales: 2
+  text_max_length: 77
+
+pretrained:
+  model_name: openai/clip-vit-base-patch16
+  cache_dir: null
+
+runtime:
+  device: cuda
+  batch_size: 128
+  eval_batch_size: 256
+  num_workers: 8
+  seed: 42
+
+stage1:
+  output_checkpoint: outputs/rearranged/clip_vit_base_patch16_rearranged.pt
+  num_layers: 12
+  embed_dim: 768
+  max_heads: 12
+
+stage2:
+  checkpoint_path: outputs/rearranged/clip_vit_base_patch16_rearranged.pt
+  output_dir: outputs/elastic/coco_retrieval
+  epochs: 10
+  mlp_choices: [768, 1536, 2304, 3072]
+  head_choices: [3, 6, 9, 12]
+  curriculum:
+    unlock_fractions: [0.0, 0.25, 0.5, 0.75]
+  contrastive_weight: 1.0
+  distillation_weight: 0.5
+  optimizer:
+    lr: 5.0e-6
+    weight_decay: 1.0e-4
+  eval_presets:
+    - {name: largest, mlp_width: 3072, num_heads: 12}
+    - {name: large, mlp_width: 3072, num_heads: 9}
+    - {name: medium, mlp_width: 2304, num_heads: 9}
+    - {name: small, mlp_width: 1536, num_heads: 6}
+    - {name: smallest, mlp_width: 768, num_heads: 3}
+
+stage3:
+  elastic_checkpoint: outputs/elastic/coco_retrieval/elastic_epoch_10.pt
+  output_dir: outputs/router/coco_retrieval
+  entropy_cache_dir: outputs/entropy_cache
+  epochs: 8
+  mlp_choices: [768, 1536, 2304, 3072]
+  head_choices: [3, 6, 9, 12]
+  router_hidden_dim: 64
+  lambda_param: 1.0e-7
+  beta: 1.0
+  gamma_retrieval: 1.0
+  kd_threshold: 0.02
+  temperature:
+    start: 5.0
+    min: 0.5
+    decay: 0.9
+  optimizer:
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
