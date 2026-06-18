@@ -1,0 +1,16 @@
+base_config: imagenet1k.yaml
+
+dataset:
+  name: fgvc_aircraft
+  root: /path/to/fgvc_aircraft
+
+runtime:
+  batch_size: 64
+  num_workers: 4
+
+stage2:
+  output_dir: outputs/elastic/fgvc_aircraft
+
+stage3:
+  elastic_checkpoint: outputs/elastic/fgvc_aircraft/elastic_epoch_30.pt
+  output_dir: outputs/router/fgvc_aircraft

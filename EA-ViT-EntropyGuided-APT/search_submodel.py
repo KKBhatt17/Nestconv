@@ -30,6 +30,7 @@ checkpoint = torch.load(stage1_checkpoint_path, map_location=device)
 model.load_state_dict(checkpoint, strict=False)
 model = model.to(device)
 model.eval()
+cached_eval_batch = None
 
 NUM_GENES = 12 + 12 * 8 + 12 * 12 + 12 + 12  # Number of binary genes in the vector (representing network structure)
 GENERATIONS = 301  # Number of generations
@@ -92,6 +93,7 @@ def create_individual_random():
     return [random.randint(0, 1) for _ in range(NUM_GENES)]
 
 def evaluate(vector):
+    global cached_eval_batch
     latency = torch.rand(1).to(device)
 
     model.configure_constraint(constraint=latency, tau=1)
@@ -119,16 +121,30 @@ def evaluate(vector):
     with torch.no_grad():
         correct = 0
         total = 0
-        for batch_idx, (img, label) in enumerate(trainDataLoader):
-            img = img.to(device)
-            label = label.to(device)
+        if cached_eval_batch is None:
+            for batch_idx, (img, label) in enumerate(trainDataLoader):
+                img = img.to(device)
+                label = label.to(device)
+                prepared_sequences, token_counts = model.prepare_adaptive_batch(img)
+                cached_eval_batch = {
+                    "prepared_sequences": prepared_sequences,
+                    "token_counts": token_counts,
+                    "label": label,
+                }
+                break
 
-            preds, attn_mask, mlp_mask, embed_mask, depth_attn_mask, depth_mlp_mask, total_macs = model(img)
+        model.caculate_mask_all()
+        preds, attn_mask, mlp_mask, embed_mask, depth_attn_mask, depth_mlp_mask, total_macs = model.forward_prepared_batch(
+            cached_eval_batch["prepared_sequences"],
+            cached_eval_batch["token_counts"],
+            device=device,
+            dtype=cached_eval_batch["prepared_sequences"][0].dtype,
+        )
 
-            _, predicted = torch.max(preds, 1)
-            total += label.size(0)
-            correct += (predicted == label).sum().item()
-            break
+        label = cached_eval_batch["label"]
+        _, predicted = torch.max(preds, 1)
+        total += label.size(0)
+        correct += (predicted == label).sum().item()
 
         accuracy = correct / total
         # print("macs", total_macs.item())

@@ -428,24 +428,43 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
         return self._forward_sequence(x)
 
     def forward_adaptive_features(self, x: torch.Tensor):
+        token_sequences, token_counts = self.adaptive_patching.build_sequences(
+            x,
+            patch_embed=self.patch_embed,
+            cls_token=self.cls_token,
+            base_pos_embed=self.pos_embed,
+        )
         output_sequences = []
-        token_counts = []
-
-        for sample_idx in range(x.shape[0]):
-            sample = x[sample_idx:sample_idx + 1]
-            sample_tokens, selected_patch_count = self.adaptive_patching(
-                sample,
-                patch_embed=self.patch_embed,
-                cls_token=self.cls_token,
-                base_pos_embed=self.pos_embed,
-            )
+        for sample_tokens in token_sequences:
             sample_tokens = self.patch_drop(sample_tokens)
             sample_tokens = self.norm_pre(sample_tokens)
             output_sequences.append(self._forward_sequence(sample_tokens))
-            token_counts.append(float(selected_patch_count))
 
         self.last_token_count = torch.tensor(token_counts, device=x.device, dtype=x.dtype).mean()
         return output_sequences
+
+    def prepare_adaptive_batch(self, x: torch.Tensor):
+        token_sequences, token_counts = self.adaptive_patching.build_sequences(
+            x,
+            patch_embed=self.patch_embed,
+            cls_token=self.cls_token,
+            base_pos_embed=self.pos_embed,
+        )
+        prepared_sequences = []
+        for sample_tokens in token_sequences:
+            prepared_sequences.append(self.norm_pre(self.patch_drop(sample_tokens)))
+        return prepared_sequences, token_counts
+
+    def forward_prepared_batch(self, prepared_sequences, token_counts, device=None, dtype=None):
+        output_sequences = [self._forward_sequence(sequence) for sequence in prepared_sequences]
+        if device is None:
+            device = output_sequences[0].device
+        if dtype is None:
+            dtype = output_sequences[0].dtype
+        self.last_token_count = torch.tensor(token_counts, device=device, dtype=dtype).mean()
+        x = torch.cat([self.forward_head(sequence) for sequence in output_sequences], dim=0)
+        mean_attn_mask_value, mean_mlp_mask_value, mean_embed_dim_mask, mean_depth_attn_mask, mean_depth_mlp_mask, total_macs = self.caculate_cost()
+        return x, mean_attn_mask_value, mean_mlp_mask_value, mean_embed_dim_mask, mean_depth_attn_mask, mean_depth_mlp_mask, total_macs
 
     def forward_head(self, x: torch.Tensor, pre_logits: bool = False) -> torch.Tensor:
         x = self.pool(x)
@@ -456,12 +475,8 @@ class EAViTStage2(timm.models.vision_transformer.VisionTransformer):
     def forward(self, x):
         self.caculate_mask_all()
 
-        x_sequences = self.forward_adaptive_features(x)
-        x = torch.cat([self.forward_head(sequence) for sequence in x_sequences], dim=0)
-
-        mean_attn_mask_value, mean_mlp_mask_value, mean_embed_dim_mask, mean_depth_attn_mask, mean_depth_mlp_mask, total_macs = self.caculate_cost()
-
-        return x, mean_attn_mask_value, mean_mlp_mask_value, mean_embed_dim_mask, mean_depth_attn_mask, mean_depth_mlp_mask, total_macs
+        prepared_sequences, token_counts = self.prepare_adaptive_batch(x)
+        return self.forward_prepared_batch(prepared_sequences, token_counts, device=x.device, dtype=x.dtype)
 
     def caculate_cost(self):
         d_embed = torch.sum(self.embed_mask) * self.head_dim

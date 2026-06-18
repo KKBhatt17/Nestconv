@@ -1,0 +1,47 @@
+"Nestconv\EA-ViT" contains the codebase for training a ViT model in elastic/nested manner. Check its Readme file at "Nestconv\EA-ViT\README.md". EA-ViT consists of 2 stages and a bootstrap stage in between. The first stage the ViT model is trained starting from the full architecture capacity and sequentially adds more elasticity and trains smaller models. The bootstrap stage runs a NSGA algorithm to prepapre a MAC, Accuracy lookup table to help stage 2. In stage 2 the a router is trained first (keeping the ViT frozen) to predict the subnetwork given a contraint value. Then the router is trained jointly with the ViT.
+
+I want to make some modifications to the EA-VIT method. We want that the subnetwork should be chosen using the complexity of image rather than compute budget. We dont need to change anything in stage1 and the NSGA. In stage 2, we just want one change, instead of giving the constraint value to the router (hard coded at train time and random at test time), we want that first a "mean entropy vlaue" of the image is calculated and passed to an MLP which predicts the constraint value to be passed to the router. To guide the "mean entropy -> constraint value" MLP I will prepare a lookup table "constraint_guide.csv" that maps mean entropy value to optimal constraint value ([EntropyMean, MACs]). We need to have a MLP initialization phase at the start of stage 2 to intialize MLP and we need to decay the loss over the initialization phase, in the same way as done for router.
+Entropy: With a patch size of 14 the image will be divided into pathes of 14x14, and then for each patch the entropy using the probability distribution of pixel intenstities is calculated, this results in a entropy map (a 2D tensor of patch entropies). We will utilize the mean of the values in this entropy map.
+The entropy map of an image can be calculated using the "process_image" function in "entropy.py".
+
+The motivation is still to select the subnetwork dynamically depending on the entropy of images, but no directly. entropy will just get us the contraint value and constraint value will get the subnetwork.
+
+One important consideration: this will make batch proessing hard to do, because the mean entropies for different images are different, and hence the subnetwork (the routrers output) to be taken will also be different. To resolve this issue we need to make one change in the dataloader, we need to sort images in the dataset on the basis of the mean entropy value. and then chunk the sorted dataset into batches, this will make sure that images in a batch have similar entropy maps and we can choose a single subnetwork for them. We also need to shuffle the batches itself (not the samples) to avoid overfitting on complex images in later phase of training. During inference, we dont need batch processing change the implementation accordingly to process single image at a time.
+
+We also need to have gradient accumulation option over few batches to make the gradient updates representative of the entire dataset.
+
+Most important thing: dont change anything in the existing codebase "Nestconv\EA-ViT", make a new directory parallel to it and add the new code in it, modifying only the necessary parts and copying rest as it is.
+
+
+____________________________________________________________
+
+I want to develop a dynamic ViT model with nested structure where an input can be routed to any subnetwork within the full network. Specifically I want to train a vit_base_patch16_224 model first in elastic manner. The elasticity needs to be there in 2 dimensions MLP ratio (768, 768*2, 768*3, 768*4) and number of attention heads (3,6,9,12). Then we need to train a router model to select one of the subnetworks at runtime depending on the input.
+
+Our method consists of the following steps:
+
+step 1: rearranging vit checkpoint.
+Given the vit_base_patch16_224 pretrained checkpoint, rearrange the checkpoint to support removal of less important MHA heads and MLP neurons. Specifically, the most important heads and most important neurons in MLP should be places first, so that while choosing a subnetwork we clip the less important ones away.
+
+step 2: elsatic vit training
+train the vit model to finetune the subnetworks. This needs to be done in a large to small fashion. for every batch we sample randomly sample a subnetwork and do a forward pass through it. Initially we expose larger subnetwork choices only and slowly introduce the smaller ones as training proceeds. Remember, for efficiency, during training we use slicing and masking, as FLOPs are not a concern, we just want to train the specific subnetwork. But, during inference we actually extract the particular subnetwork so that the FLOPs reduce. This step should just use normal cross entropy loss. After each epoch we need to evaluate the model at 5 subnetwork levels (Largest to smallest), reporting loss, top-1 accuracy, and macs/flops.
+
+step3: training the router
+This is the final step. In this we keep the ViT model frozen and train the router to predict the optimal subnetwork that has as minimal parameter as possible but not having deviation from full model accuracy/loss more than a predefined threshold. the router takes the mean entropy as input (of the entire batch while training and of a single image during inference). The mean entropy of the input image. "entropy.py" provides the script to calculate the entropy map (2D tensor) for an image. Use this to calculate the mean entropy (mean of entropy map) for an image. In this stage also we need to evaluate after every epoch and report average loss, top-1 accuracy, and average macs/flops.
+In this step, to optimize the router we will use differentiable routing with Gumbel-Softmax trick. The router outputs logits for the available choices at each layer. We use gumbel-softmax relaxation to sample these choices during training. The router takes mean image entropy as input and outputs Lx4 logits for MLP sizes and Lx4 logits for MHA heads. We apply gumbel-softmax to these logits. This yields a differentiable one hot like vector for selecting network configuration after argmax. The we use masking/slicing to do forward pass through the selected network. 
+The loss will be combination of two losses.
+a) Task loss (knowledge distillation loss L_kd): Helps select subnetwork that does not differ much in performance with respect to full model. We pass the image through both full network and selected subnetwork. And, calculate the KL divergence.
+b) Efficiency loss: To minimize the parameters/FLOPs. L_param = sum_over_layers(sum_over_4_values_of_MLP(probability_of_the_configuration * param_count_for_that_configuration) + sum_over_4_values_of_MHA(probability_of_the_configuration * param_count_for_that_configuration)).
+
+The combined loss will be: L_total = lambda * L_param + beta * max(0, L_kd - threshold)
+
+if L_kd is less than threshold the second loss term becomes 0, and the router focus on minmizing L_param.
+if L_kd is more than threshold the beta penalty kicks in and the gradients will force the router to select bigger network.
+
+In step 3, batch processing will be hard, because the mean entropies for different images are different, and hence the subnetwork (the routrers output) to be taken will also be different. To resolve this issue we need to make one change in the dataloader, we need to sort images in the dataset on the basis of the mean entropy value. and then chunk the sorted dataset into batches, this will make sure that images in a batch have similar entropy maps and we can choose a single subnetwork for them. We also need to shuffle the batches itself (not the samples) to avoid overfitting on complex images in later phase of training. During inference, we dont need batch processing change the implementation accordingly to process single image at a time.
+For step2 we can have normal dataloader.
+
+We need to train and evaluate on multiple image benchmarks. Imagenet 1K, Cifar 10, and Cifar 100.
+
+For one dataset, the entropies for image should be calculated for the first time and stored to access directly during further iterations.
+
+we need to have proper modular code, config file and bash scripts to run all the steps.

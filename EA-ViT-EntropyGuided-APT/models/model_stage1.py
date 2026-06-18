@@ -216,15 +216,14 @@ class EAViTStage1(timm.models.vision_transformer.VisionTransformer):
         return self._forward_sequence(x)
 
     def forward_adaptive_features(self, x: torch.Tensor):
+        token_sequences, _ = self.adaptive_patching.build_sequences(
+            x,
+            patch_embed=self.patch_embed,
+            cls_token=self.cls_token,
+            base_pos_embed=self.pos_embed,
+        )
         output_sequences = []
-        for sample_idx in range(x.shape[0]):
-            sample = x[sample_idx:sample_idx + 1]
-            sample_tokens, _ = self.adaptive_patching(
-                sample,
-                patch_embed=self.patch_embed,
-                cls_token=self.cls_token,
-                base_pos_embed=self.pos_embed,
-            )
+        for sample_tokens in token_sequences:
             sample_tokens = self.patch_drop(sample_tokens)
             sample_tokens = self.norm_pre(sample_tokens)
             output_sequences.append(self._forward_sequence(sample_tokens))

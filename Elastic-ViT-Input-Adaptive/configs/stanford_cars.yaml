@@ -1,0 +1,16 @@
+base_config: imagenet1k.yaml
+
+dataset:
+  name: stanford_cars
+  root: /path/to/stanford_cars
+
+runtime:
+  batch_size: 64
+  num_workers: 4
+
+stage2:
+  output_dir: outputs/elastic/stanford_cars
+
+stage3:
+  elastic_checkpoint: outputs/elastic/stanford_cars/elastic_epoch_30.pt
+  output_dir: outputs/router/stanford_cars
