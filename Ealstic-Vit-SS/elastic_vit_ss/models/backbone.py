@@ -120,6 +120,8 @@ class ElasticViTBackbone(BaseModule):
         pyramid_scales: Sequence[float] = (4.0, 2.0, 1.0, 0.5),
         router_temperature: float = 1.0,
         frozen_stages: int = -1,
+        freeze_vit: bool = False,
+        freeze_router: bool = False,
         init_cfg: dict | None = None,
     ) -> None:
         super().__init__(init_cfg=init_cfg)
@@ -129,6 +131,8 @@ class ElasticViTBackbone(BaseModule):
         self.pyramid_scales = tuple(pyramid_scales)
         self.router_temperature = router_temperature
         self.frozen_stages = frozen_stages
+        self.freeze_vit = freeze_vit
+        self.freeze_router = freeze_router
 
         base_model = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
         self.patch_embed = base_model.patch_embed
@@ -152,7 +156,7 @@ class ElasticViTBackbone(BaseModule):
             self._load_filtered_checkpoint(checkpoint_path)
         if router_checkpoint:
             self._load_router_checkpoint(router_checkpoint)
-        self._freeze_stages()
+        self._apply_freezing()
 
     def _load_filtered_checkpoint(self, checkpoint_path: str) -> None:
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -166,7 +170,23 @@ class ElasticViTBackbone(BaseModule):
         state_dict = checkpoint.get("model", checkpoint)
         self.router.load_state_dict(state_dict, strict=False)
 
-    def _freeze_stages(self) -> None:
+    @staticmethod
+    def _freeze_module(module: nn.Module) -> None:
+        module.eval()
+        for parameter in module.parameters():
+            parameter.requires_grad = False
+
+    def _freeze_vit_parameters(self) -> None:
+        for module in [self.patch_embed, self.pos_drop, self.blocks, self.norm]:
+            self._freeze_module(module)
+        self.cls_token.requires_grad = False
+        self.pos_embed.requires_grad = False
+
+    def _apply_freezing(self) -> None:
+        if self.freeze_vit:
+            self._freeze_vit_parameters()
+        if self.freeze_router:
+            self._freeze_module(self.router)
         if self.frozen_stages < 0:
             return
         for module in [self.patch_embed, self.pos_drop]:
@@ -182,7 +202,7 @@ class ElasticViTBackbone(BaseModule):
 
     def train(self, mode: bool = True) -> "ElasticViTBackbone":
         super().train(mode)
-        self._freeze_stages()
+        self._apply_freezing()
         return self
 
     def _tokens_to_map(self, x: torch.Tensor, grid_h: int, grid_w: int) -> torch.Tensor:

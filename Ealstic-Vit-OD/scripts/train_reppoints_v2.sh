@@ -4,5 +4,4 @@ set -euo pipefail
 CONFIG=${1:-configs/reppoints_v2_elastic_vit_coco.py}
 GPUS=${GPUS:-8}
 
-bash tools/dist_train.sh "${CONFIG}" "${GPUS}"
-
+torchrun --nproc_per_node="${GPUS}" tools/train.py "${CONFIG}" --launcher pytorch
