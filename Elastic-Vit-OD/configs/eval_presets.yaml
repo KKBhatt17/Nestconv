@@ -1,0 +1,29 @@
+# N backbone sub-networks to evaluate with tools/eval_configs.py.
+# Each entry is broadcast to all 12 layers via {mlp_width, num_heads},
+# or you may give explicit per-layer lists via {mlp_widths, num_heads_per_layer}.
+# Edit freely: add/remove entries to set your own N and configurations.
+#
+# Choices must lie within the backbone's mlp_choices / head_choices:
+#   mlp_choices  = [768, 1536, 2304, 3072]
+#   head_choices = [3, 6, 9, 12]
+configs:
+  - name: largest
+    mlp_width: 3072
+    num_heads: 12
+  - name: large
+    mlp_width: 3072
+    num_heads: 9
+  - name: medium
+    mlp_width: 2304
+    num_heads: 9
+  - name: small
+    mlp_width: 1536
+    num_heads: 6
+  - name: smallest
+    mlp_width: 768
+    num_heads: 3
+
+  # Example of an explicit per-layer configuration (uncomment to use):
+  # - name: custom_per_layer
+  #   mlp_widths:        [3072, 3072, 2304, 2304, 1536, 1536, 1536, 768, 768, 768, 768, 768]
+  #   num_heads_per_layer: [12,   12,    9,    9,    6,    6,    6,   3,   3,   3,   3,   3]

@@ -1,6 +1,0 @@
-torch
-timm
-mmengine
-mmcv
-mmdet
-
