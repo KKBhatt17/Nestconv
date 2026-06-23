@@ -1,0 +1,49 @@
+# Base config. CLEVR / dummy configs inherit from this via `base_config:` and
+# override only what differs. Paths marked /path/to/... must be set before running.
+
+dataset:
+  name: gqa
+  root: /path/to/gqa                      # contains questions/ and images/
+  image_size: 384                          # BLIP-vqa-base operates at 384px
+  answer_vocab_path: outputs/vocab/gqa_answers.json
+  answer_vocab_size: 1842                  # top-K most frequent train answers
+  max_question_length: 32
+
+runtime:
+  device: cuda
+  batch_size: 32
+  num_workers: 8
+
+stage1:
+  # Derive the timm-style input checkpoint straight from BLIP's vision tower.
+  export_from_blip:
+    blip_model_name: Salesforce/blip-vqa-base
+    output_path: outputs/rearranged/blip_vqa_base_vision_timm.pt
+    target_pos_tokens: null                # 384px BLIP already matches vit_base_patch16_384
+  output_checkpoint: outputs/rearranged/gqa_blip_vision_rearranged.pt
+  num_layers: 12
+  embed_dim: 768
+  max_heads: 12
+
+stage2:
+  vision_model_name: vit_base_patch16_384
+  blip_model_name: Salesforce/blip-vqa-base
+  use_timm_pretrained: false
+  vision_checkpoint: outputs/rearranged/gqa_blip_vision_rearranged.pt
+  freeze_text: true                        # train only the elastic vision tower + answer head
+  head_hidden_dim: 0                        # 0 -> single linear answer head
+  output_dir: outputs/elastic/gqa
+  epochs: 20
+  mlp_choices: [768, 1536, 2304, 3072]
+  head_choices: [3, 6, 9, 12]
+  curriculum:
+    unlock_fractions: [0.0, 0.25, 0.5, 0.75]
+  optimizer:
+    lr: 1.0e-4
+    weight_decay: 0.05
+  eval_presets:
+    - {name: largest, mlp_width: 3072, num_heads: 12}
+    - {name: large,   mlp_width: 3072, num_heads: 9}
+    - {name: medium,  mlp_width: 2304, num_heads: 9}
+    - {name: small,   mlp_width: 1536, num_heads: 6}
+    - {name: smallest, mlp_width: 768, num_heads: 3}

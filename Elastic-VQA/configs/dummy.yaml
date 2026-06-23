@@ -1,0 +1,29 @@
+# Synthetic smoke test: random images + fixed Q/A. No real data or BLIP vision
+# export needed -- vision starts from the timm ViT (or random) and only the BLIP
+# text encoder is downloaded. Use this to verify the pipeline runs end to end.
+base_config: gqa.yaml
+
+dataset:
+  name: dummy
+  root: null
+  image_size: 224
+  num_samples: 256
+  answer_vocab_path: outputs/vocab/dummy_answers.json
+  answer_vocab_size: 16
+  max_question_length: 16
+
+runtime:
+  device: cpu
+  batch_size: 8
+  num_workers: 0
+
+stage1:
+  # No BLIP export / rearrange needed for the smoke test.
+  export_from_blip: null
+
+stage2:
+  vision_model_name: vit_base_patch16_224
+  use_timm_pretrained: false
+  vision_checkpoint: null
+  output_dir: outputs/elastic/dummy
+  epochs: 2

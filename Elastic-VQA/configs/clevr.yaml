@@ -1,0 +1,17 @@
+base_config: gqa.yaml
+
+dataset:
+  name: clevr
+  root: /path/to/clevr                     # contains questions/ and images/{train,val}
+  image_size: 384
+  answer_vocab_path: outputs/vocab/clevr_answers.json
+  answer_vocab_size: 28                     # CLEVR has a tiny closed answer set
+  max_question_length: 48                   # CLEVR questions are long/compositional
+
+stage1:
+  output_checkpoint: outputs/rearranged/clevr_blip_vision_rearranged.pt
+
+stage2:
+  vision_checkpoint: outputs/rearranged/clevr_blip_vision_rearranged.pt
+  output_dir: outputs/elastic/clevr
+  epochs: 15
