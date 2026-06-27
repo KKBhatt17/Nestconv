@@ -63,6 +63,15 @@ def build_dataset(dataset_cfg: Dict, split: str, vocab: AnswerVocab) -> Dataset:
             num_samples=int(dataset_cfg.get("num_samples", 256)),
         )
 
+    if name == "okvqa":
+        return okvqa.OkvqaDataset(
+            root=dataset_cfg["root"],
+            split=split,
+            vocab=vocab,
+            transform=transform,
+            images_root=dataset_cfg.get("images_root"),
+        )
+
     dataset_cls = meta["dataset_cls"]
     return dataset_cls(root=dataset_cfg["root"], split=split, vocab=vocab, transform=transform)
 

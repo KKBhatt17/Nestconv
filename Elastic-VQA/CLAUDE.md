@@ -73,7 +73,9 @@ There is no test suite, linter config, or build step.
   the most-frequent (officially-normalized) answer; eval branches on the optional
   `answer_targets` collate key to score the official VQA soft accuracy
   (`utils/metrics.py:vqa_soft_accuracy`). The 4th item field and `answer_targets`
-  key are additive — single-answer datasets are unaffected.
+  key are additive — single-answer datasets are unaffected. Optional
+  `dataset.images_root` points the (standard COCO) images outside `root`, overriding
+  the default `<root>/images` base.
 
 ## Conventions
 - All modules use `from __future__ import annotations` and type hints.

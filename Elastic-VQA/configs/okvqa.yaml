@@ -2,7 +2,8 @@ base_config: gqa.yaml
 
 dataset:
   name: okvqa
-  root: /path/to/okvqa                     # contains questions/ annotations/ images/{train2014,val2014}
+  root: /path/to/okvqa                     # contains questions/ annotations/ (and images/ unless images_root is set)
+  # images_root: /path/to/coco            # optional: COCO dir holding train2014/ & val2014/; overrides <root>/images
   image_size: 384
   answer_vocab_path: outputs/vocab/okvqa_answers.json
   answer_vocab_size: 2000                   # OK-VQA answers are long-tailed; tune as needed

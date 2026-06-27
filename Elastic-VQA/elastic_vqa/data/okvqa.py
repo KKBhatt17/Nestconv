@@ -19,7 +19,10 @@ Expected layout under ``dataset.root`` (official OK-VQA v1.1 + COCO images)::
         val2014/COCO_val2014_000000XXXXXX.jpg
 
 ``train`` -> ``train2014`` files/dir, ``val`` -> ``val2014``. OK-VQA's ``val``
-split is the public evaluation set (answers included).
+split is the public evaluation set (answers included). Set ``dataset.images_root``
+to read the (standard COCO) images from outside ``root`` -- it overrides the
+default ``<root>/images`` base while keeping the ``train2014/``-``val2014/`` subdir
+and COCO filename layout.
 
 The single training label is the most frequent (officially-normalized) answer, so
 the existing cross-entropy path is unchanged; evaluation uses the standard VQA
@@ -124,9 +127,9 @@ def _annotations_path(root: str | Path, split: str) -> Path:
     return Path(root) / "annotations" / filename
 
 
-def _image_path(root: str | Path, split: str, image_id: int) -> Path:
+def _image_path(images_base: str | Path, split: str, image_id: int) -> Path:
     subdir = _IMAGE_SUBDIR.get(split, f"{split}2014")
-    return Path(root) / "images" / subdir / f"COCO_{subdir}_{int(image_id):012d}.jpg"
+    return Path(images_base) / subdir / f"COCO_{subdir}_{int(image_id):012d}.jpg"
 
 
 def _load_records(root: str | Path, split: str) -> List[dict]:
@@ -162,19 +165,29 @@ def iter_train_answers(root: str | Path) -> Iterator[str]:
 
 
 class OkvqaDataset(Dataset):
-    def __init__(self, root: str | Path, split: str, vocab: AnswerVocab, transform=None) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        split: str,
+        vocab: AnswerVocab,
+        transform=None,
+        images_root: str | Path | None = None,
+    ) -> None:
         self.root = Path(root)
         self.split = split
         self.records = _load_records(root, split)
         self.vocab = vocab
         self.transform = transform
+        # ``images_root`` lets the COCO images live outside ``root`` (they are the
+        # standard COCO 2014 images); default keeps them under ``<root>/images``.
+        self.images_base = Path(images_root) if images_root else self.root / "images"
 
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, index: int) -> Tuple[object, str, int, List[int]]:
         record = self.records[index]
-        image = Image.open(_image_path(self.root, self.split, record["image_id"])).convert("RGB")
+        image = Image.open(_image_path(self.images_base, self.split, record["image_id"])).convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
         label = self.vocab.encode(record["label"])
