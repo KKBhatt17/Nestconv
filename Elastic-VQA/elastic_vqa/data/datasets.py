@@ -16,7 +16,7 @@ from typing import Callable, Dict, Tuple
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from elastic_vqa.data import clevr, dummy, gqa
+from elastic_vqa.data import clevr, dummy, gqa, okvqa
 from elastic_vqa.data.transforms import build_image_transform
 from elastic_vqa.data.vocab import AnswerVocab, load_or_build_vocab
 
@@ -25,6 +25,7 @@ from elastic_vqa.data.vocab import AnswerVocab, load_or_build_vocab
 DATASET_METADATA: Dict[str, Dict[str, object]] = {
     "gqa": {"task_type": "vqa", "module": gqa, "dataset_cls": gqa.GqaDataset},
     "clevr": {"task_type": "vqa", "module": clevr, "dataset_cls": clevr.ClevrDataset},
+    "okvqa": {"task_type": "vqa", "module": okvqa, "dataset_cls": okvqa.OkvqaDataset},
     "dummy": {"task_type": "vqa", "module": dummy, "dataset_cls": None},
 }
 
@@ -74,7 +75,11 @@ def build_tokenizer(blip_model_name: str):
 
 def make_collate_fn(tokenizer, max_length: int) -> Callable:
     def collate(batch):
-        images, questions, labels = zip(*batch)
+        # Items are (image, question, label) or, for datasets with multiple human
+        # answers (OK-VQA), (image, question, label, answer_idxs). The 4th field is
+        # optional so single-answer datasets are unaffected.
+        fields = list(zip(*batch))
+        images, questions, labels = fields[0], fields[1], fields[2]
         pixel_values = torch.stack(list(images), dim=0)
         encoded = tokenizer(
             list(questions),
@@ -83,12 +88,15 @@ def make_collate_fn(tokenizer, max_length: int) -> Callable:
             max_length=max_length,
             return_tensors="pt",
         )
-        return {
+        out = {
             "pixel_values": pixel_values,
             "input_ids": encoded["input_ids"],
             "attention_mask": encoded["attention_mask"],
             "labels": torch.tensor(labels, dtype=torch.long),
         }
+        if len(fields) > 3:
+            out["answer_targets"] = torch.tensor(fields[3], dtype=torch.long)
+        return out
 
     return collate
 

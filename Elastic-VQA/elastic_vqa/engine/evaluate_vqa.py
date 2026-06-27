@@ -17,7 +17,7 @@ from tqdm import tqdm
 from elastic_vqa.engine.losses import vqa_loss
 from elastic_vqa.models.common import SubnetworkConfig, make_subnetwork_config
 from elastic_vqa.utils.flops import estimate_vit_macs
-from elastic_vqa.utils.metrics import AverageMeter, vqa_accuracy
+from elastic_vqa.utils.metrics import AverageMeter, vqa_accuracy, vqa_soft_accuracy
 
 
 @torch.no_grad()
@@ -42,7 +42,13 @@ def evaluate_subnetwork(
 
         batch_size = labels.size(0)
         loss_meter.update(loss.item(), batch_size)
-        acc_meter.update(vqa_accuracy(logits, labels), batch_size)
+        # Datasets with multiple human answers (OK-VQA) carry ``answer_targets`` and
+        # are scored with the official VQA soft accuracy; others use exact-match.
+        if "answer_targets" in batch:
+            answer_targets = batch["answer_targets"].to(device, non_blocking=True)
+            acc_meter.update(vqa_soft_accuracy(logits, answer_targets), batch_size)
+        else:
+            acc_meter.update(vqa_accuracy(logits, labels), batch_size)
 
     macs = estimate_vit_macs(model.embed_dim, config)
     return {"loss": loss_meter.avg, "accuracy": acc_meter.avg, "macs": float(macs)}

@@ -66,6 +66,14 @@ There is no test suite, linter config, or build step.
 - `gqa.py`, `clevr.py`, `dummy.py` each yield `(image, question, answer_index)`;
   `datasets.py` holds the registry, BLIP tokenizer, and the collate fn that stacks
   images, tokenizes questions, and stacks labels.
+- `okvqa.py` (OK-VQA) has VQAv2-style annotations (separate question/annotation
+  JSONs merged by `question_id`, 10 human answers/question over COCO images). It
+  yields a 4-tuple `(image, question, answer_index, answer_idxs)` — the extra
+  `answer_idxs` is the 10 human answers as vocab indices. The CE training label is
+  the most-frequent (officially-normalized) answer; eval branches on the optional
+  `answer_targets` collate key to score the official VQA soft accuracy
+  (`utils/metrics.py:vqa_soft_accuracy`). The 4th item field and `answer_targets`
+  key are additive — single-answer datasets are unaffected.
 
 ## Conventions
 - All modules use `from __future__ import annotations` and type hints.

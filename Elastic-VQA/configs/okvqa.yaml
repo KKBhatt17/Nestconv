@@ -1,0 +1,17 @@
+base_config: gqa.yaml
+
+dataset:
+  name: okvqa
+  root: /path/to/okvqa                     # contains questions/ annotations/ images/{train2014,val2014}
+  image_size: 384
+  answer_vocab_path: outputs/vocab/okvqa_answers.json
+  answer_vocab_size: 2000                   # OK-VQA answers are long-tailed; tune as needed
+  max_question_length: 32
+
+stage1:
+  output_checkpoint: outputs/rearranged/okvqa_blip_vision_rearranged.pt
+
+stage2:
+  vision_checkpoint: outputs/rearranged/okvqa_blip_vision_rearranged.pt
+  output_dir: outputs/elastic/okvqa
+  epochs: 20

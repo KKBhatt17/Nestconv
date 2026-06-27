@@ -43,13 +43,16 @@ python -m elastic_vqa.cli train-elastic --config configs/dummy.yaml
 | Dataset | `answer_vocab_size` | Notes |
 |---|---|---|
 | GQA | ~1842 | `train_balanced` / `testdev_balanced`; single ground-truth answer |
+| OK-VQA | ~2000 | Knowledge-based VQA over COCO images; VQAv2-style annotations (10 human answers/question), scored with official VQA soft accuracy |
 | CLEVR | ~28 | Closed answer set → no vocab-coverage cap; good fast smoke test |
 | dummy | 16 | Synthetic; verifies the pipeline with no data/GPU |
 
 ## Metrics (per eval preset)
 
-- **Exact-match accuracy** — primary; out-of-vocab answers count as incorrect, so
-  the headline number is over the *full* eval set (vocab-coverage cap included).
+- **Accuracy** — primary; out-of-vocab answers count as incorrect, so the headline
+  number is over the *full* eval set (vocab-coverage cap included). Single-answer
+  datasets (GQA/CLEVR) use exact-match top-1; OK-VQA uses the official VQA soft
+  accuracy `min(#humans_matching_pred / 3, 1)` over its 10 human answers.
 - **Validation CE loss.**
 - **Vision-tower MACs** — makes the accuracy-vs-compute trade-off across presets
   legible. (`estimate_vit_macs` uses a default token count; for 384px set
